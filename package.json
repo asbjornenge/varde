@@ -1,0 +1,34 @@
+{
+  "name": "varde",
+  "version": "0.1.0",
+  "description": "Varde: an open discovery and negotiation layer for agents (proof of concept)",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "demo": "tsx src/demo.ts",
+    "relay": "tsx src/bin/relay.ts",
+    "room": "tsx src/bin/room.ts",
+    "matcher": "tsx src/bin/matcher.ts",
+    "mcp": "tsx src/mcp/server.ts",
+    "eval:negotiation": "node --env-file=.env --import tsx src/eval/negotiation.ts",
+    "eval:agents": "node --env-file=.env --import tsx src/eval/agents.ts",
+    "owner": "tsx src/bin/owner.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.12.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "tsx": "^4.19.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.6.0"
+  }
+}

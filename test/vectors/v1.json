@@ -1,0 +1,285 @@
+{
+  "about": "Test vectors for Varde wire format v1. The keys are for testing only. An implementation is compatible if it reproduces every id and signature here, and accepts every beacon, the quote, the approvals and the receipt.",
+  "identities": {
+    "alice": {
+      "did": "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX",
+      "signPub": "8vGY1S3FXStP9XQ2KDjUUsbriMbYC5fclAKwo_gD3VQ",
+      "signPriv": "dSg2a-PK37DYXtqGN5fCW-RYLnljnGI1T_A1QW1sMCY",
+      "encPub": "w80vySzU9TkNOBLA7NkovHVIOv2D2XWe9eotBm0fuWE",
+      "encPriv": "2PKizUNMXoeQ_suScQYgpfhmEt2wYX8u05NiC53Uj3E"
+    },
+    "bob": {
+      "did": "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A",
+      "signPub": "8T2-QP9tCVhiKP8Zu6lDMVG9Tr5f3n9OO8xf4_YFGfk",
+      "signPriv": "I9gWQ0T0foUDbp7Ddd3RzILdfIQf81dshwUuxHeQ8oc",
+      "encPub": "ZcF_1azzeEOIlVEn2jgVxrwGR1o_oHiTht7FU4696T4",
+      "encPriv": "uIDBnh90CeToev-MtnOn-fiXQYkW1fP4LSWGRYWnBUU"
+    },
+    "room": {
+      "did": "did:key:z6MkvrEBHVHTh1T5rSMazqFsRJetE4oQfpT9PBVapMGvyV6A",
+      "signPub": "85087nNfCes00t6ZnpD-d_fUlqpXIuIuijBKtw7K3gs",
+      "signPriv": "4nwun65RFyoNwUT0vKpZ8KutPiFEmzjwyqMgeSpo9AU",
+      "encPub": "FBGcdWu72DEgd6ol85S6nPUl3aCX7xNwe9Sge4odIVQ",
+      "encPriv": "eAybmvkOpYg_fpGL2IroVRubMIXkcrPPLIeiNlFrP3k"
+    },
+    "owner": {
+      "did": "did:key:z6Mkvca9Sh9u888dPPokaVeUTG4FP45bXE1tPVzeiNofifbP",
+      "signPub": "8B2vUyeUgmdX9fMoQJ8QSdMugjRBC1gdR-zkyHikD2o",
+      "signPriv": "CTDo_AkRjMfBmYpxJnrWr_M7y6x33rHoHccTxzyMT2k",
+      "encPub": "b5NsiiCQe_urhghPo8D8obMjK3ZhSs_gJqyzbjfTazk",
+      "encPriv": "yP2CA2Nvvkzw4T5TQdeHkQdCTRQvITp3rH2QKs_oXHY"
+    }
+  },
+  "canonical": [
+    {
+      "value": {
+        "b": 1,
+        "a": [
+          true,
+          null,
+          "x"
+        ],
+        "ø": 1.5,
+        "z": {
+          "y": 1e+21,
+          "x": 0
+        }
+      },
+      "json": "{\"a\":[true,null,\"x\"],\"b\":1,\"z\":{\"x\":0,\"y\":1e+21},\"ø\":1.5}"
+    }
+  ],
+  "signingInput": {
+    "context": "beacon",
+    "object": {
+      "v": 1,
+      "who": "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX",
+      "what": {
+        "text": "Looking for a used iPad Air, under 4000 kr",
+        "tags": [
+          "ipad"
+        ],
+        "intent": "want"
+      },
+      "scope": {
+        "where": "Stavanger area"
+      },
+      "lit": "2026-11-22T12:00:00.000Z",
+      "expires": "2036-11-29T00:00:00.000Z",
+      "reachMe": [
+        {
+          "kind": "mailbox",
+          "relay": "wss://relay.example",
+          "encKey": "w80vySzU9TkNOBLA7NkovHVIOv2D2XWe9eotBm0fuWE"
+        }
+      ],
+      "accepts": {
+        "rooms": [
+          "wss://room.example"
+        ],
+        "protocols": [
+          "varde-room/1"
+        ]
+      }
+    },
+    "bytesUtf8": "varde/beacon/v1\n{\"accepts\":{\"protocols\":[\"varde-room/1\"],\"rooms\":[\"wss://room.example\"]},\"expires\":\"2036-11-29T00:00:00.000Z\",\"lit\":\"2026-11-22T12:00:00.000Z\",\"reachMe\":[{\"encKey\":\"w80vySzU9TkNOBLA7NkovHVIOv2D2XWe9eotBm0fuWE\",\"kind\":\"mailbox\",\"relay\":\"wss://relay.example\"}],\"scope\":{\"where\":\"Stavanger area\"},\"v\":1,\"what\":{\"intent\":\"want\",\"tags\":[\"ipad\"],\"text\":\"Looking for a used iPad Air, under 4000 kr\"},\"who\":\"did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX\"}",
+    "signer": "alice",
+    "sig": "UBqbKCaLCxRcmyJnsXR20miP82lhAL6Z2JTqXK4usf4ls84i9ez50eXcnZUBcDOJy8Su-dTADkBsCTE2FAhjAg"
+  },
+  "beacons": [
+    {
+      "id": "CGkm_rJHWi41J_mt2CtRw3ojQfBVUIrlLCyf7NT3kAc",
+      "beacon": {
+        "v": 1,
+        "who": "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX",
+        "what": {
+          "text": "Looking for a used iPad Air, under 4000 kr",
+          "tags": [
+            "ipad"
+          ],
+          "intent": "want"
+        },
+        "scope": {
+          "where": "Stavanger area"
+        },
+        "lit": "2026-11-22T12:00:00.000Z",
+        "expires": "2036-11-29T00:00:00.000Z",
+        "reachMe": [
+          {
+            "kind": "mailbox",
+            "relay": "wss://relay.example",
+            "encKey": "w80vySzU9TkNOBLA7NkovHVIOv2D2XWe9eotBm0fuWE"
+          }
+        ],
+        "accepts": {
+          "rooms": [
+            "wss://room.example"
+          ],
+          "protocols": [
+            "varde-room/1"
+          ]
+        },
+        "sig": "UBqbKCaLCxRcmyJnsXR20miP82lhAL6Z2JTqXK4usf4ls84i9ez50eXcnZUBcDOJy8Su-dTADkBsCTE2FAhjAg"
+      }
+    },
+    {
+      "id": "RhYYbT_TX09agJ6U8DyUjZx43wC1hRsNvrzldMkpm34",
+      "beacon": {
+        "v": 1,
+        "who": "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A",
+        "what": "Selger brukt iPad Air – «pent brukt», 64 GB",
+        "scope": {
+          "geo": {
+            "lat": 58.97,
+            "lon": 5.7331,
+            "radiusKm": 12.5
+          }
+        },
+        "lit": "2026-11-22T12:00:00.000Z",
+        "expires": "2036-11-29T00:00:00.000Z",
+        "reachMe": [
+          {
+            "kind": "mailbox",
+            "relay": "wss://relay.example",
+            "encKey": "ZcF_1azzeEOIlVEn2jgVxrwGR1o_oHiTht7FU4696T4"
+          }
+        ],
+        "accepts": {
+          "rooms": [
+            "wss://room.example"
+          ],
+          "protocols": [
+            "varde-room/1"
+          ]
+        },
+        "sig": "iOaVB6lOas-VRXrqoUFhH-4nvHmxYi5v0ONqS86repk6fSm0czv6RrrDT1_GND_DPYQv1Kg4sH6th9gjQ7m8CQ"
+      }
+    }
+  ],
+  "quote": {
+    "id": "HlZzQSo3v5zxhgLBmIXt5VuDWGCSIHFrj3TwCbNP66M",
+    "quote": {
+      "v": 1,
+      "kind": "varde.quote",
+      "room": "did:key:z6MkvrEBHVHTh1T5rSMazqFsRJetE4oQfpT9PBVapMGvyV6A",
+      "session": "c2Vzc2lvbi1leGFtcGxlLTAwMDE",
+      "parties": [
+        {
+          "did": "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX",
+          "side": "pay",
+          "beacon": "CGkm_rJHWi41J_mt2CtRw3ojQfBVUIrlLCyf7NT3kAc",
+          "approver": "did:key:z6Mkvca9Sh9u888dPPokaVeUTG4FP45bXE1tPVzeiNofifbP"
+        },
+        {
+          "did": "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A",
+          "side": "receive",
+          "beacon": "RhYYbT_TX09agJ6U8DyUjZx43wC1hRsNvrzldMkpm34",
+          "approver": "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A"
+        }
+      ],
+      "terms": {
+        "price": 3530,
+        "currency": "NOK",
+        "conditions": {
+          "pickup": "Stavanger"
+        }
+      },
+      "turns": 8,
+      "at": "2026-11-22T12:05:00.000Z",
+      "validUntil": "2026-11-23T12:05:00.000Z",
+      "sigs": {
+        "did:key:z6MkvrEBHVHTh1T5rSMazqFsRJetE4oQfpT9PBVapMGvyV6A": "Qg6VY0uBVZbB6aXzHkBbbdxxNR5Vbu_wbmegdPserZBuziTTjMmnrjqZMS_64AJwir8ac1zFio_L7gcd3Rr2Dg",
+        "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX": "pBmzhZQV4WhOwNzGqUKK7U9aHYQU6qj6GH3MARijwuFyOR2V1bcm1Dn2vnpCY_rBhIyQYUHTq4PocZu69uQrAA",
+        "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A": "2qr6nLhO_G0NGgcXzw3H1S6XntRklum7D7D-Pcz5tyjrqA1n4tSrHOsh-toKxPSQwztywOPEF4pshnOfhSDDBw"
+      }
+    }
+  },
+  "approvals": [
+    {
+      "v": 1,
+      "kind": "varde.approval",
+      "quote": "HlZzQSo3v5zxhgLBmIXt5VuDWGCSIHFrj3TwCbNP66M",
+      "party": "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX",
+      "by": "did:key:z6Mkvca9Sh9u888dPPokaVeUTG4FP45bXE1tPVzeiNofifbP",
+      "at": "2026-11-22T18:00:00.000Z",
+      "sig": "jfkuT8GFr1qywo9tEMSG4H6kjPTM79ISpnqJfwFt9qK4yjdMxBtVgXYLZ-hmBm6qjwWiOEMreKrn2mGk1b0xBA"
+    },
+    {
+      "v": 1,
+      "kind": "varde.approval",
+      "quote": "HlZzQSo3v5zxhgLBmIXt5VuDWGCSIHFrj3TwCbNP66M",
+      "party": "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A",
+      "by": "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A",
+      "at": "2026-11-22T18:01:00.000Z",
+      "sig": "9Q-y1F4j40ABmtwwMVr3hdbKOPnBAZMdG6IfesDbllP9pC1KG2rrw7PMF-opEnRik8ex9qFSWpi3Kb5JTcXMBA"
+    }
+  ],
+  "withdrawal": {
+    "v": 1,
+    "kind": "varde.withdrawal",
+    "quote": "HlZzQSo3v5zxhgLBmIXt5VuDWGCSIHFrj3TwCbNP66M",
+    "party": "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX",
+    "at": "2026-11-22T18:00:00.000Z",
+    "sig": "J2HmePzsXJHWEWABE6zzFMkJv2YEhPI_FAx3x90-7m7zoQZJbveN6n5pxfEkbAdTSws1ecffY0_G8sR9KUmXAg"
+  },
+  "receipt": {
+    "v": 1,
+    "kind": "varde.receipt",
+    "quote": {
+      "v": 1,
+      "kind": "varde.quote",
+      "room": "did:key:z6MkvrEBHVHTh1T5rSMazqFsRJetE4oQfpT9PBVapMGvyV6A",
+      "session": "c2Vzc2lvbi1leGFtcGxlLTAwMDE",
+      "parties": [
+        {
+          "did": "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX",
+          "side": "pay",
+          "beacon": "CGkm_rJHWi41J_mt2CtRw3ojQfBVUIrlLCyf7NT3kAc",
+          "approver": "did:key:z6Mkvca9Sh9u888dPPokaVeUTG4FP45bXE1tPVzeiNofifbP"
+        },
+        {
+          "did": "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A",
+          "side": "receive",
+          "beacon": "RhYYbT_TX09agJ6U8DyUjZx43wC1hRsNvrzldMkpm34",
+          "approver": "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A"
+        }
+      ],
+      "terms": {
+        "price": 3530,
+        "currency": "NOK",
+        "conditions": {
+          "pickup": "Stavanger"
+        }
+      },
+      "turns": 8,
+      "at": "2026-11-22T12:05:00.000Z",
+      "validUntil": "2026-11-23T12:05:00.000Z",
+      "sigs": {
+        "did:key:z6MkvrEBHVHTh1T5rSMazqFsRJetE4oQfpT9PBVapMGvyV6A": "Qg6VY0uBVZbB6aXzHkBbbdxxNR5Vbu_wbmegdPserZBuziTTjMmnrjqZMS_64AJwir8ac1zFio_L7gcd3Rr2Dg",
+        "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX": "pBmzhZQV4WhOwNzGqUKK7U9aHYQU6qj6GH3MARijwuFyOR2V1bcm1Dn2vnpCY_rBhIyQYUHTq4PocZu69uQrAA",
+        "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A": "2qr6nLhO_G0NGgcXzw3H1S6XntRklum7D7D-Pcz5tyjrqA1n4tSrHOsh-toKxPSQwztywOPEF4pshnOfhSDDBw"
+      }
+    },
+    "approvals": [
+      {
+        "v": 1,
+        "kind": "varde.approval",
+        "quote": "HlZzQSo3v5zxhgLBmIXt5VuDWGCSIHFrj3TwCbNP66M",
+        "party": "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX",
+        "by": "did:key:z6Mkvca9Sh9u888dPPokaVeUTG4FP45bXE1tPVzeiNofifbP",
+        "at": "2026-11-22T18:00:00.000Z",
+        "sig": "jfkuT8GFr1qywo9tEMSG4H6kjPTM79ISpnqJfwFt9qK4yjdMxBtVgXYLZ-hmBm6qjwWiOEMreKrn2mGk1b0xBA"
+      },
+      {
+        "v": 1,
+        "kind": "varde.approval",
+        "quote": "HlZzQSo3v5zxhgLBmIXt5VuDWGCSIHFrj3TwCbNP66M",
+        "party": "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A",
+        "by": "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A",
+        "at": "2026-11-22T18:01:00.000Z",
+        "sig": "9Q-y1F4j40ABmtwwMVr3hdbKOPnBAZMdG6IfesDbllP9pC1KG2rrw7PMF-opEnRik8ex9qFSWpi3Kb5JTcXMBA"
+      }
+    ],
+    "at": "2026-11-22T18:02:00.000Z",
+    "sig": "uvSS7fGYymmRJOGVdBm_XunDy5Ijv-UvcDt1WxhNA3kE10wimRvxR3YE_xnC0eCsgbgjCEcacp-XmAQXUd2DCA"
+  }
+}

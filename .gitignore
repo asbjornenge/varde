@@ -1,0 +1,6 @@
+node_modules
+dist
+.varde
+*.log
+.env
+eval-results

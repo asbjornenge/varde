@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://varde.example/schema/beacon-v1.json",
+  "title": "Varde beacon, version 1",
+  "description": "A signed statement of a want or an offer. The signature in `sig` is Ed25519 by the key in `who` over the bytes `varde/beacon/v1\\n` followed by the RFC 8785 canonical JSON of the beacon without `sig`.",
+  "type": "object",
+  "required": ["v", "who", "what", "lit", "expires", "reachMe", "sig"],
+  "additionalProperties": false,
+  "properties": {
+    "v": { "const": 1 },
+    "who": { "type": "string", "pattern": "^did:key:z6Mk", "description": "DID of the agent that lit the beacon. Holds the key only; the signature is in `sig`." },
+    "what": {
+      "description": "The want or offer in free text. The object form adds optional tags and an intent hint.",
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 2000 },
+        {
+          "type": "object",
+          "required": ["text"],
+          "additionalProperties": false,
+          "properties": {
+            "text": { "type": "string", "minLength": 1, "maxLength": 2000 },
+            "tags": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 256 } },
+            "intent": { "enum": ["want", "offer"] }
+          }
+        }
+      ]
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "where": { "type": "string" },
+        "geo": {
+          "type": "object",
+          "required": ["lat", "lon"],
+          "properties": {
+            "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+            "lon": { "type": "number", "minimum": -180, "maximum": 180 },
+            "radiusKm": { "type": "number", "minimum": 0 }
+          }
+        },
+        "from": { "type": "string", "format": "date-time" },
+        "until": { "type": "string", "format": "date-time" },
+        "topic": { "type": "string" }
+      }
+    },
+    "lit": { "type": "string", "format": "date-time", "description": "When the beacon was lit." },
+    "expires": { "type": "string", "format": "date-time", "description": "When the beacon burns out. Must be after `lit`." },
+    "reachMe": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["kind", "relay", "encKey"],
+            "properties": {
+              "kind": { "const": "mailbox" },
+              "relay": { "type": "string", "description": "URL of the relay that holds mail for `who`." },
+              "encKey": { "type": "string", "description": "X25519 public key, base64url, that mail must be sealed to." }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind", "protocol", "url"],
+            "properties": {
+              "kind": { "const": "endpoint" },
+              "protocol": { "type": "string", "description": "For example a2a, mcp or https." },
+              "url": { "type": "string" }
+            }
+          }
+        ]
+      }
+    },
+    "proofs": { "type": "array", "description": "Whatever the lighter chooses to attach: a stake, a credential, a pointer to reputation." },
+    "accepts": {
+      "type": "object",
+      "properties": {
+        "rooms": { "type": "array", "items": { "type": "string" }, "description": "Room URLs, most preferred first." },
+        "protocols": { "type": "array", "items": { "type": "string" } },
+        "trust": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "sig": { "type": "string", "description": "Ed25519 signature, base64url without padding." }
+  }
+}
