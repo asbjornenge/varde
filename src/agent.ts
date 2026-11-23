@@ -17,6 +17,8 @@ import type { DealState } from './room/server.js'
 import type { Mandate } from './room/negotiation.js'
 
 export const ROOM_PROTOCOL = 'varde-room/1'
+/** The most proof of work this agent will do to light one beacon: about half a minute. */
+export const MAX_POW_BITS = 24
 
 /** What one side tells the other it can use after first contact. */
 export interface Supports {
@@ -310,7 +312,11 @@ export class Agent extends EventEmitter {
   async light(input: LightInput): Promise<{ id: string; beacon: Beacon }> {
     const expires = input.expires ?? new Date(Date.now() + (input.ttlMs ?? 24 * 60 * 60_000)).toISOString()
     const structured = input.intent !== undefined || (input.tags?.length ?? 0) > 0
+    // Do whatever work the relay asks for, up to a point: a relay cannot make us mine without end.
+    const home = await this.home()
+    if (home.policy.powBits > MAX_POW_BITS) throw new Error(`the relay asks for ${home.policy.powBits} bits of proof of work, which is more than this agent will do`)
     const beacon = lightBeacon(this.identity, {
+      pow: home.policy.powBits || undefined,
       what: structured ? { text: input.what, tags: input.tags?.length ? input.tags : undefined, intent: input.intent } : input.what,
       scope: input.scope && Object.keys(input.scope).length ? input.scope : undefined,
       expires,
@@ -318,7 +324,7 @@ export class Agent extends EventEmitter {
       proofs: input.proofs,
       accepts: { rooms: input.rooms ?? this.rooms, protocols: [ROOM_PROTOCOL] },
     })
-    const id = await (await this.home()).publish(beacon)
+    const id = await home.publish(beacon)
     this.beacons.set(id, beacon)
     this.save()
     return { id, beacon }
@@ -589,6 +595,16 @@ export class Agent extends EventEmitter {
     const q = this.quotes.get(session)
     if (!q) throw new Error(`no quote for session ${session}`)
     return q
+  }
+
+  /** The owner whose approval deals need, if any. */
+  get owner(): string | undefined {
+    return this.opts.owner
+  }
+
+  /** Names, changes or removes the owner. Applies to quotes negotiated from now on. */
+  setOwner(owner: string | undefined, autoCommit?: number) {
+    this.opts = { ...this.opts, owner, autoCommit }
   }
 
   /** Asks the room where a quote stands: still open, approved by whom, made, withdrawn or lapsed. */

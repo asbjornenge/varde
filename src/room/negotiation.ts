@@ -1,4 +1,4 @@
-import { isDid } from '../core/identity.js'
+import { isApproverDid } from '../core/identity.js'
 
 /**
  * The rules of a room, as plain code with no I/O. A mandate is enforced here,
@@ -79,7 +79,7 @@ export function checkMandate(m: Mandate): string | null {
   if (typeof m.currency !== 'string' || !/^[A-Za-z]{2,8}$/.test(m.currency)) return 'mandate.currency must be a short code'
   if (!validPrice(m.limit)) return 'mandate.limit must be a positive amount with at most two decimals'
   if (m.maxTurns !== undefined && !(Number.isInteger(m.maxTurns) && m.maxTurns >= 1)) return 'mandate.maxTurns must be a positive integer'
-  if (m.owner !== undefined && !isDid(m.owner)) return 'mandate.owner must be a did:key'
+  if (m.owner !== undefined && !isApproverDid(m.owner)) return 'mandate.owner must be a did:key'
   if (m.autoCommit !== undefined && !validPrice(m.autoCommit)) return 'mandate.autoCommit must be a positive amount'
   if (m.holdSeconds !== undefined && !(Number.isFinite(m.holdSeconds) && m.holdSeconds >= 1)) return 'mandate.holdSeconds must be at least 1'
   if (m.terms !== undefined) {

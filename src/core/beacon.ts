@@ -1,6 +1,7 @@
 import { b64u, sha256 } from './bytes.js'
 import { canonicalize } from './canonical.js'
 import { type Identity, isDid, signObject, verifyObject } from './identity.js'
+import { minePow } from './pow.js'
 
 export type Intent = 'want' | 'offer'
 
@@ -47,7 +48,11 @@ export interface Beacon {
   sig: string
 }
 
-export type BeaconInput = Omit<Beacon, 'v' | 'who' | 'lit' | 'sig'> & { lit?: string }
+export type BeaconInput = Omit<Beacon, 'v' | 'who' | 'lit' | 'sig'> & {
+  lit?: string
+  /** Attach this many bits of proof of work, as a relay may require. */
+  pow?: number
+}
 
 export const BEACON_CONTEXT = 'beacon'
 export const MAX_BEACON_BYTES = 8 * 1024
@@ -55,17 +60,21 @@ export const MAX_WHAT_CHARS = 2000
 
 /** Signs a beacon with the lighter's key. */
 export function lightBeacon(id: Identity, input: BeaconInput, now = Date.now()): Beacon {
-  const beacon = signObject(id, BEACON_CONTEXT, {
-    v: 1 as const,
-    who: id.did,
-    what: input.what,
-    scope: input.scope,
-    lit: input.lit ?? new Date(now).toISOString(),
-    expires: input.expires,
-    reachMe: input.reachMe,
-    proofs: input.proofs,
-    accepts: input.accepts,
-  })
+  const content = JSON.parse(
+    JSON.stringify({
+      v: 1 as const,
+      who: id.did,
+      what: input.what,
+      scope: input.scope,
+      lit: input.lit ?? new Date(now).toISOString(),
+      expires: input.expires,
+      reachMe: input.reachMe,
+      proofs: input.proofs,
+      accepts: input.accepts,
+    }),
+  )
+  if (input.pow) content.proofs = [...(content.proofs ?? []), minePow(content, input.pow)]
+  const beacon = signObject(id, BEACON_CONTEXT, content as Omit<Beacon, 'sig'>)
   // Drop undefined optionals so the stored object equals what was signed.
   const clean = JSON.parse(JSON.stringify(beacon)) as Beacon
   const problem = checkBeacon(clean, now)

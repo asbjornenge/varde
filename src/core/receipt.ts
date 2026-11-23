@@ -1,6 +1,7 @@
-import { b64u, sha256 } from './bytes.js'
+import { verify as cryptoVerify } from 'node:crypto'
+import { b64u, sha256, unb64u } from './bytes.js'
 import { canonicalize } from './canonical.js'
-import { type Identity, isDid, sign, signObject, verify, verifyObject } from './identity.js'
+import { type Identity, isApproverDid, isDid, isP256Did, p256FromDid, sign, signObject, signingBytes, verify, verifyObject } from './identity.js'
 
 /**
  * A deal is made in two steps, so that a person can decide between them.
@@ -29,7 +30,7 @@ export interface QuoteParty {
   approver: string
 }
 
-export interface Terms {
+export interface DealTerms {
   price: number
   currency: string
   /** Conditions beyond price that were part of the accepted offer. */
@@ -42,7 +43,7 @@ export interface QuoteBody {
   room: string
   session: string
   parties: [QuoteParty, QuoteParty]
-  terms: Terms
+  terms: DealTerms
   turns: number
   at: string
   /** The quote can be approved until this time. */
@@ -54,7 +55,11 @@ export interface Quote extends QuoteBody {
   sigs: Record<string, string>
 }
 
-/** One side's binding yes to a quote. */
+/**
+ * One side's binding yes to a quote. Signed either with an Ed25519 key
+ * (`sig`), or by a passkey (`webauthn`), which is how a person approves from
+ * a phone with a key that never leaves it.
+ */
 export interface Approval {
   v: 1
   kind: 'varde.approval'
@@ -62,8 +67,18 @@ export interface Approval {
   party: string
   by: string
   at: string
-  sig: string
+  sig?: string
+  webauthn?: WebAuthnAssertion
 }
+
+/** What a passkey returns when asked to sign. All fields base64url. */
+export interface WebAuthnAssertion {
+  authenticatorData: string
+  clientDataJSON: string
+  signature: string
+}
+
+export type ApprovalRequest = Omit<Approval, 'sig' | 'webauthn'>
 
 /** One side's no. Signed by the agent: declining needs no owner. */
 export interface Withdrawal {
@@ -110,7 +125,7 @@ export function checkQuote(q: Quote): string | null {
   const signers = [q.room, q.parties[0].did, q.parties[1].did]
   if (new Set(signers).size !== 3) return 'room and parties must be three different keys'
   const body = quoteBody(q)
-  for (const p of q.parties) if (!isDid(p.did) || !isDid(p.approver)) return 'malformed'
+  for (const p of q.parties) if (!isDid(p.did) || !isApproverDid(p.approver)) return 'malformed'
   for (const did of signers)
     if (typeof q.sigs[did] !== 'string' || !verifyQuoteSig(did, body, q.sigs[did])) return `bad or missing signature from ${did}`
   return null
@@ -135,7 +150,50 @@ export function checkApproval(a: Approval, quote: Quote | QuoteBody): string | n
   const party = quote.parties.find((p) => p.did === a.party)
   if (!party) return 'approval names someone who is not a party'
   if (a.by !== party.approver) return 'approval is not signed by the key this quote requires'
-  if (!verifyObject(a.by, APPROVAL, a)) return 'bad signature'
+  if (isP256Did(a.by)) return checkPasskey(a)
+  if (a.webauthn !== undefined || !verifyObject(a.by, APPROVAL, a)) return 'bad signature'
+  return null
+}
+
+/** The approval a passkey is asked to sign: everything but the signature. */
+export function approvalRequest(quote: Quote | QuoteBody, party: string, by: string, now = Date.now()): ApprovalRequest {
+  return { v: 1, kind: 'varde.approval', quote: quoteId(quote), party, by, at: new Date(now).toISOString() }
+}
+
+/**
+ * The WebAuthn challenge for an approval: the hash of exactly the bytes an
+ * Ed25519 approver would sign. A passkey signs the challenge, so its
+ * signature covers this approval of this quote and nothing else.
+ */
+export const passkeyChallenge = (request: ApprovalRequest): string => b64u(sha256(signingBytes(APPROVAL, request)))
+
+const FLAG_USER_PRESENT = 0x01
+const FLAG_USER_VERIFIED = 0x04
+
+function checkPasskey(a: Approval): string | null {
+  const w = a.webauthn
+  if (a.sig !== undefined || !w || typeof w.authenticatorData !== 'string' || typeof w.clientDataJSON !== 'string' || typeof w.signature !== 'string')
+    return 'a passkey approval needs a webauthn assertion'
+  const { webauthn: _w, ...request } = a
+  const authData = unb64u(w.authenticatorData)
+  const clientData = unb64u(w.clientDataJSON)
+  let client: { type?: unknown; challenge?: unknown }
+  try {
+    client = JSON.parse(clientData.toString('utf8'))
+  } catch {
+    return 'bad signature'
+  }
+  if (client.type !== 'webauthn.get') return 'not a passkey assertion'
+  if (client.challenge !== passkeyChallenge(request as ApprovalRequest)) return 'the passkey signed something else'
+  // The person must have been there and proven who they are (biometric or PIN), not merely tapped.
+  if (authData.length < 37) return 'bad signature'
+  if (!(authData[32] & FLAG_USER_PRESENT) || !(authData[32] & FLAG_USER_VERIFIED)) return 'the passkey did not verify its user'
+  try {
+    const signed = Buffer.concat([authData, sha256(clientData)])
+    if (!cryptoVerify('sha256', signed, p256FromDid(a.by), unb64u(w.signature))) return 'bad signature'
+  } catch {
+    return 'bad signature'
+  }
   return null
 }
 

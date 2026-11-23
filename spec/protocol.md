@@ -89,6 +89,25 @@ A relay may keep its beacons and mail in a file. It checks what it reads back
 like anything else. An agent that loses its connection reconnects and
 publishes its live beacons again, so a relay that returns empty is refilled.
 
+The opening `challenge` also carries the relay's `policy { powBits, maxTtlMs }`:
+what it asks of anyone who publishes. A relay may refuse a request with
+`error { reason: "rate limited" }`, and may close connections from an address
+that opens too many.
+
+### Proof of work
+
+A relay may ask for a cost to light, so that flooding it is expensive without
+anyone needing an account. The cost is a proof in the beacon's `proofs`:
+
+    { "type": "pow", "bits": 16, "nonce": "3fk2" }
+
+It holds if `sha256(challenge + ":" + nonce)` starts with at least that many
+zero bits, where `challenge` is
+`base64url(sha256(canonical-json(beacon without proofs and sig)))`. The work is
+therefore bound to one beacon. `bits` is only a claim: a verifier counts the
+zero bits itself. A relay with `policy.powBits` above zero refuses beacons that
+carry less, and a listener may apply a threshold of its own.
+
 The relay checks each beacon's signature and expiry, drops expired beacons,
 and caps time-to-live and beacons per key. Clients check again, so a relay
 does not have to be trusted.
@@ -191,6 +210,34 @@ default, capped by the room.
 An approval is signed by `by`, which must be that party's `approver`. A
 withdrawal is signed by the party's agent: saying no needs no owner. Both name
 the quote by id, so neither can be moved to other terms.
+
+### Approval by passkey
+
+An approver may be a passkey, so that a person can approve from a phone with a
+key that never leaves it. Such an approver is a `did:key` holding a P-256 key
+(multicodec `0x1200`, so the identifier starts `did:key:zDn`). A P-256 key
+can approve a quote and do nothing else: it cannot light a beacon, send mail
+or join a room.
+
+A passkey approval has no `sig`. It carries the WebAuthn assertion instead:
+
+    approval  { v, kind: "varde.approval", quote: <id>, party, by, at,
+                webauthn: { authenticatorData, clientDataJSON, signature } }
+
+The three fields are base64url. The approval is valid when:
+
+- the challenge in `clientDataJSON` equals
+  `base64url(sha256("varde/approval/v1\n" + canonical-json(approval without webauthn)))`,
+  which is the hash of the bytes an Ed25519 approver would have signed;
+- `clientDataJSON.type` is `webauthn.get`;
+- the user-present and user-verified flags are both set in
+  `authenticatorData`, so the person proved who they are and did not merely tap;
+- `signature` is a valid ECDSA P-256 signature with SHA-256, by the key in
+  `by`, over `authenticatorData || sha256(clientDataJSON)`.
+
+The protocol does not check the origin or the relying party in the assertion.
+Which page collected the approval, and how a passkey is tied to a person, are
+for the implementation and for whoever relies on the receipt.
 
 Quotes are decided on any connection to the room, by whoever holds a signed
 approval or withdrawal:

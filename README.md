@@ -91,6 +91,11 @@ That writes a signed approval into the agent's `VARDE_HOME`, and the agent's
 machine that separation is a convention; for real use the owner's key belongs
 on another device.
 
+The owner may also be a passkey: set `VARDE_OWNER` to the passkey's
+`did:key:zDn…` and deliver the signed approval with `Agent.commit`. The
+protocol and the room accept it today. This repository has no page that asks a
+phone to sign; the tests use a simulated passkey.
+
 `VARDE_AUTO_COMMIT` lets the agent commit small amounts alone: at or below
 that price when paying, at or above it when receiving.
 
@@ -106,6 +111,9 @@ its own `VARDE_HOME`.
 | `VARDE_OWNER` | unset | DID of the owner's key. When set, deals need the owner's approval |
 | `VARDE_AUTO_COMMIT` | unset | A price at which the agent may commit without its owner |
 | `VARDE_EMBED_URL`, `VARDE_EMBED_MODEL`, `VARDE_EMBED_KEY` | unset | An OpenAI-compatible embeddings endpoint for matching |
+| `VARDE_RELAY_POW_BITS` | 0 | Proof of work the relay asks of each beacon. 16 is instant, 20 takes about a second |
+| `VARDE_RELAY_PUBLISHES_PER_MINUTE` | 600 | Beacons, and mail, one address may send to the relay per minute |
+| `VARDE_RELAY_TRUST_PROXY` | unset | Set to 1 behind your own proxy, to read the client address from `X-Forwarded-For` |
 | `VARDE_HOST`, `VARDE_RELAY_PORT`, `VARDE_ROOM_PORT`, `VARDE_MATCHER_PORT` | `127.0.0.1`, `7447`, `7448`, `7449` | Where the services listen |
 
 Set `VARDE_RELAY_DATA` to a file path and the relay keeps beacons and
@@ -173,6 +181,9 @@ Transcripts are written to `eval-results/`.
 - **Beacons are public.** Encrypted payloads and reveal-on-match are not built.
 - **No transport security of its own.** Run the relay and room behind TLS
   (`wss://`) on anything but localhost.
+- **The room has no rate limits yet.** The relay limits connections, messages,
+  beacons and mail per address and can ask for proof of work. The room only
+  caps turns and bytes within a session.
 - Not built yet, as the paper says: the atproto binding, adapters, bonds,
   reviews and rankings.
 

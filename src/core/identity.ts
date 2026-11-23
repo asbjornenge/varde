@@ -1,4 +1,6 @@
 import {
+  ECDH,
+  type KeyObject,
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
@@ -51,6 +53,44 @@ export function isDid(did: unknown): did is string {
     return false
   }
 }
+
+const P256_MULTICODEC = Buffer.from([0x80, 0x24])
+const P256_PREFIX = 'did:key:zDn'
+
+/**
+ * A did:key holding a P-256 key, the kind a passkey has. Such a key can
+ * approve a quote but cannot light a beacon or take part in a handshake.
+ */
+export function didFromP256(key: KeyObject): string {
+  const jwk = key.export({ format: 'jwk' }) as { x: string; y: string }
+  const uncompressed = Buffer.concat([Buffer.from([4]), unb64u(jwk.x), unb64u(jwk.y)])
+  const compressed = ECDH.convertKey(uncompressed, 'prime256v1', undefined, undefined, 'compressed') as Buffer
+  return DID_PREFIX + base58encode(Buffer.concat([P256_MULTICODEC, compressed]))
+}
+
+/** Returns the P-256 public key in a did:key, or throws. */
+export function p256FromDid(did: string): KeyObject {
+  if (typeof did !== 'string' || !did.startsWith(P256_PREFIX)) throw new Error('not a did:key holding a P-256 key')
+  const bytes = base58decode(did.slice(DID_PREFIX.length))
+  if (bytes.length !== 35 || bytes[0] !== 0x80 || bytes[1] !== 0x24) throw new Error('not a did:key holding a P-256 key')
+  const raw = ECDH.convertKey(bytes.subarray(2), 'prime256v1', undefined, undefined, 'uncompressed') as Buffer
+  return createPublicKey({ key: { kty: 'EC', crv: 'P-256', x: b64u(raw.subarray(1, 33)), y: b64u(raw.subarray(33)) }, format: 'jwk' })
+}
+
+export function isP256Did(did: unknown): did is string {
+  try {
+    p256FromDid(did as string)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** A key that may approve a quote: an agent's or owner's Ed25519 key, or a passkey. */
+export const isApproverDid = (did: unknown): did is string => isDid(did) || isP256Did(did)
+
+/** The exact bytes a signature in Varde covers, for signers that are not an `Identity`. */
+export const signingBytes = (context: string, obj: unknown): Buffer => signingInput(context, obj)
 
 export function createIdentity(): Identity {
   const ed = generateKeyPairSync('ed25519')

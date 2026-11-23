@@ -3,8 +3,9 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { type Beacon, beaconId, checkBeacon } from '../src/core/beacon.js'
 import { canonicalize } from '../src/core/canonical.js'
-import { type Identity, sign, signObject } from '../src/core/identity.js'
-import { type Approval, type Quote, type Receipt, type Withdrawal, approveQuote, checkApproval, checkQuote, checkReceipt, checkWithdrawal, issueReceipt, quoteBody, quoteId, signQuote, withdrawQuote } from '../src/core/receipt.js'
+import { createPublicKey } from 'node:crypto'
+import { type Identity, didFromP256, sign, signObject } from '../src/core/identity.js'
+import { type Approval, type ApprovalRequest, type Quote, type Receipt, type Withdrawal, approveQuote, checkApproval, checkQuote, checkReceipt, checkWithdrawal, issueReceipt, passkeyChallenge, quoteBody, quoteId, signQuote, withdrawQuote } from '../src/core/receipt.js'
 
 // Fixed keys and expected outputs. Another implementation can use the same
 // file to prove it signs the same bytes.
@@ -17,6 +18,7 @@ const v = JSON.parse(readFileSync(new URL('../spec/vectors/v1.json', import.meta
   approvals: [Approval, Approval]
   withdrawal: Withdrawal
   receipt: Receipt
+  passkey: { publicKeyJwk: object; did: string; quote: { id: string; quote: Quote }; request: ApprovalRequest; challenge: string; approval: Approval }
 }
 
 test('vectors: canonical JSON', () => {
@@ -58,4 +60,15 @@ test('vectors: the quote, its approvals, the withdrawal and the receipt verify a
 
   assert.equal(checkReceipt(v.receipt), null)
   assert.deepEqual(issueReceipt(room, quote, v.approvals, Date.parse(v.receipt.at)), v.receipt)
+})
+
+test('vectors: a passkey approval is accepted, and its DID and challenge are reproduced exactly', () => {
+  const p = v.passkey
+  assert.equal(didFromP256(createPublicKey({ key: p.publicKeyJwk as never, format: 'jwk' })), p.did)
+  assert.equal(checkQuote(p.quote.quote), null)
+  assert.equal(quoteId(p.quote.quote), p.quote.id)
+  assert.equal(passkeyChallenge(p.request), p.challenge)
+  assert.equal(checkApproval(p.approval, p.quote.quote), null)
+  // The same assertion does not approve the other quote in this file.
+  assert.match(checkApproval(p.approval, v.quote.quote)!, /another quote/)
 })

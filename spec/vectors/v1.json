@@ -281,5 +281,75 @@
     ],
     "at": "2026-11-22T18:02:00.000Z",
     "sig": "uvSS7fGYymmRJOGVdBm_XunDy5Ijv-UvcDt1WxhNA3kE10wimRvxR3YE_xnC0eCsgbgjCEcacp-XmAQXUd2DCA"
+  },
+  "passkey": {
+    "about": "An approval signed by a passkey. ECDSA signatures differ each time, so an implementation must accept this one but cannot reproduce it. The challenge and the DID must be reproduced exactly.",
+    "publicKeyJwk": {
+      "kty": "EC",
+      "x": "o-0VfUyiyXomYMeL4CNvbvP3gw6i3A1T-6AViojpbnI",
+      "y": "2HsseOUKUt9H705ZHb0zGGHqdiOoe1TDgWtoZ1vKs84",
+      "crv": "P-256"
+    },
+    "did": "did:key:zDnaebTsBLwbWF8hHwhZDT3fYUATNYLnVqFbhqDFdiuoztChF",
+    "quote": {
+      "id": "ASDlC-9XQ2rKd30YNbrzPdR3FPUg2aQhP5ugMOHBUrQ",
+      "quote": {
+        "v": 1,
+        "kind": "varde.quote",
+        "room": "did:key:z6MkvrEBHVHTh1T5rSMazqFsRJetE4oQfpT9PBVapMGvyV6A",
+        "session": "c2Vzc2lvbi1leGFtcGxlLTAwMDI",
+        "parties": [
+          {
+            "did": "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX",
+            "side": "pay",
+            "beacon": "CGkm_rJHWi41J_mt2CtRw3ojQfBVUIrlLCyf7NT3kAc",
+            "approver": "did:key:zDnaebTsBLwbWF8hHwhZDT3fYUATNYLnVqFbhqDFdiuoztChF"
+          },
+          {
+            "did": "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A",
+            "side": "receive",
+            "beacon": "RhYYbT_TX09agJ6U8DyUjZx43wC1hRsNvrzldMkpm34",
+            "approver": "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A"
+          }
+        ],
+        "terms": {
+          "price": 3530,
+          "currency": "NOK",
+          "conditions": {
+            "pickup": "Stavanger"
+          }
+        },
+        "turns": 8,
+        "at": "2026-11-22T12:05:00.000Z",
+        "validUntil": "2026-11-23T12:05:00.000Z",
+        "sigs": {
+          "did:key:z6MkvrEBHVHTh1T5rSMazqFsRJetE4oQfpT9PBVapMGvyV6A": "71rA3GDAl1oiSwiCYbCCISgrgRBNtFWP11wyKjcC1rMG_2MHHXChah8ByCKBHvxC6xK5M9FtGkpl7gccnyBKDw",
+          "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX": "RjYsAPikp4gHtmAkkks540RDCPTfmL84kIunmv2RT7J2NroLigOq3c5qsmQo41ad0qENEcvQWGRiRvxFyig9BQ",
+          "did:key:z6MkvgxuY8EdZaFkZNPg6vn9pRgU2gUYKZz9BjV6LgdVRD1A": "JKFj0orJ2WiUQ7R4l8gGbrZv7gX2kt27OMWFtKP21R66hTqzR6R_33qf0q7APpHzW4E6uAbx6hyqGPF1Uf0wAg"
+        }
+      }
+    },
+    "request": {
+      "v": 1,
+      "kind": "varde.approval",
+      "quote": "ASDlC-9XQ2rKd30YNbrzPdR3FPUg2aQhP5ugMOHBUrQ",
+      "party": "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX",
+      "by": "did:key:zDnaebTsBLwbWF8hHwhZDT3fYUATNYLnVqFbhqDFdiuoztChF",
+      "at": "2026-11-22T18:00:00.000Z"
+    },
+    "challenge": "04jPan9y_LhRjmzx_tr9vg51JK0jpZi22mEkJkB4CBE",
+    "approval": {
+      "v": 1,
+      "kind": "varde.approval",
+      "quote": "ASDlC-9XQ2rKd30YNbrzPdR3FPUg2aQhP5ugMOHBUrQ",
+      "party": "did:key:z6MkvocNsgamvQZnuGL3nrs6NdhL4h4aCpQmn3DFeLpp2CEX",
+      "by": "did:key:zDnaebTsBLwbWF8hHwhZDT3fYUATNYLnVqFbhqDFdiuoztChF",
+      "at": "2026-11-22T18:00:00.000Z",
+      "webauthn": {
+        "authenticatorData": "vZmyirb3IjT3FV0b-z5b_eK-7PKWP6U1IQryP1IpUjMFAAAAAQ",
+        "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiMDRqUGFuOXlfTGhSam16eF90cjl2ZzUxSkswanBaaTIybUVrSmtCNENCRSIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwcm92ZS5leGFtcGxlIiwiY3Jvc3NPcmlnaW4iOmZhbHNlfQ",
+        "signature": "MEQCIEffQe77ey5w0NVGBCUmEfJwOTk2qXa0zJibaxSjwbUBAiA7RWSJ9mJEADEQ2VyZ-Ur5ZPk48IJT43LNQT6zx1d_YA"
+      }
+    }
   }
 }

@@ -4,6 +4,7 @@ import { type WebSocket, WebSocketServer } from 'ws'
 import { type Beacon, beaconId, checkBeacon, isExpired } from '../core/beacon.js'
 import { nonce } from '../core/bytes.js'
 import { type Filter, isFilter, matchesFilter } from '../core/filter.js'
+import { powBits } from '../core/pow.js'
 import { isDid, verify } from '../core/identity.js'
 import { type Sealed, isSealed } from '../core/seal.js'
 
@@ -25,6 +26,18 @@ export interface RelayOptions {
   maxMailPerRecipient?: number
   maxSubsPerConnection?: number
   sweepMs?: number
+  /** Bits of proof of work a beacon must carry to be accepted. Default 0: none. */
+  minPowBits?: number
+  /** Messages one connection may send: a burst, then a steady rate per second. Default 60 and 20. */
+  messageBurst?: number
+  messagesPerSecond?: number
+  /** Most simultaneous connections from one address. Default 200. */
+  maxConnectionsPerAddress?: number
+  /** Beacons and mail one address may send per minute. Default 600 each. */
+  publishesPerMinute?: number
+  mailPerMinute?: number
+  /** Take the client address from X-Forwarded-For. Only behind a proxy you run. */
+  trustProxy?: boolean
   /**
    * Keep beacons and undelivered mail in this file, so a restart loses
    * nothing. Without it the relay holds everything in memory.
@@ -51,10 +64,39 @@ interface StoredMail {
 
 interface Conn {
   ws: WebSocket
+  address: string
+  bucket: Bucket
   challenge: string
   did?: string
   mailSub: boolean
   subs: Map<string, Filter>
+}
+
+/** What a relay asks of those who publish to it. Sent with the opening challenge. */
+export interface RelayPolicy {
+  powBits: number
+  maxTtlMs: number
+}
+
+/** A token bucket: `burst` at once, refilled at `perSecond`. */
+class Bucket {
+  private tokens: number
+  private at: number
+  constructor(
+    private burst: number,
+    private perSecond: number,
+    now: number,
+  ) {
+    this.tokens = burst
+    this.at = now
+  }
+  take(now: number): boolean {
+    this.tokens = Math.min(this.burst, this.tokens + ((now - this.at) / 1000) * this.perSecond)
+    this.at = now
+    if (this.tokens < 1) return false
+    this.tokens--
+    return true
+  }
 }
 
 export const RELAY_AUTH_CONTEXT = 'relay-auth'
@@ -67,6 +109,20 @@ export async function startRelay(opts: RelayOptions = {}): Promise<Relay> {
   const mailTtlMs = opts.mailTtlMs ?? DAY
   const maxMail = opts.maxMailPerRecipient ?? 200
   const maxSubs = opts.maxSubsPerConnection ?? 32
+
+  const minPowBits = opts.minPowBits ?? 0
+  const policy: RelayPolicy = { powBits: minPowBits, maxTtlMs }
+  const maxPerAddress = opts.maxConnectionsPerAddress ?? 200
+  const perAddress = new Map<string, { conns: number; publish: Bucket; mail: Bucket }>()
+  const addressState = (address: string) => {
+    let s = perAddress.get(address)
+    if (!s) {
+      const perMin = (n: number) => new Bucket(n, n / 60, Date.now())
+      s = { conns: 0, publish: perMin(opts.publishesPerMinute ?? 600), mail: perMin(opts.mailPerMinute ?? 600) }
+      perAddress.set(address, s)
+    }
+    return s
+  }
 
   const beacons = new Map<string, Beacon>()
   const mail = new Map<string, StoredMail[]>()
@@ -121,6 +177,8 @@ export async function startRelay(opts: RelayOptions = {}): Promise<Relay> {
     if (Date.parse(beacon.expires) - now() > maxTtlMs) return send(c, { t: 'error', ref, reason: 'expires too far ahead' })
     const id = beaconId(beacon)
     if (!beacons.has(id)) {
+      if (minPowBits && powBits(beacon) < minPowBits) return send(c, { t: 'error', ref, reason: `needs ${minPowBits} bits of proof of work` })
+      if (!addressState(c.address).publish.take(Date.now())) return send(c, { t: 'error', ref, reason: 'rate limited' })
       let held = 0
       for (const b of beacons.values()) if (b.who === beacon.who && !isExpired(b, now())) held++
       if (held >= maxPerWho) return send(c, { t: 'error', ref, reason: 'too many live beacons for this key' })
@@ -145,6 +203,7 @@ export async function startRelay(opts: RelayOptions = {}): Promise<Relay> {
 
   function acceptMail(c: Conn, ref: unknown, to: unknown, sealed: unknown) {
     if (!isDid(to) || !isSealed(sealed)) return send(c, { t: 'error', ref, reason: 'mail needs a recipient and a sealed body' })
+    if (!addressState(c.address).mail.take(Date.now())) return send(c, { t: 'error', ref, reason: 'rate limited' })
     const list = mail.get(to) ?? []
     if (list.length >= maxMail) return send(c, { t: 'error', ref, reason: 'mailbox full' })
     const m: StoredMail = { id: nonce(12), to, sealed, at: now() }
@@ -155,14 +214,26 @@ export async function startRelay(opts: RelayOptions = {}): Promise<Relay> {
     send(c, { t: 'ok', ref, id: m.id })
   }
 
-  wss.on('connection', (ws) => {
-    const c: Conn = { ws, challenge: nonce(), mailSub: false, subs: new Map() }
+  wss.on('connection', (ws, req) => {
+    const forwarded = opts.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() : ''
+    const address = forwarded || req.socket.remoteAddress || 'unknown'
+    const from = addressState(address)
+    if (from.conns >= maxPerAddress) {
+      ws.close(1013, 'too many connections')
+      return
+    }
+    from.conns++
+    const c: Conn = { ws, address, bucket: new Bucket(opts.messageBurst ?? 60, opts.messagesPerSecond ?? 20, Date.now()), challenge: nonce(), mailSub: false, subs: new Map() }
     conns.add(c)
-    ws.on('close', () => conns.delete(c))
+    ws.on('close', () => {
+      conns.delete(c)
+      from.conns--
+    })
     ws.on('error', () => ws.terminate())
-    send(c, { t: 'challenge', nonce: c.challenge })
+    send(c, { t: 'challenge', nonce: c.challenge, policy })
 
     ws.on('message', (data) => {
+      if (!c.bucket.take(Date.now())) return send(c, { t: 'error', reason: 'rate limited' })
       let m: Record<string, unknown>
       try {
         m = JSON.parse(data.toString())

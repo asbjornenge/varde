@@ -4,7 +4,7 @@ import { nonce } from '../core/bytes.js'
 import type { Filter } from '../core/filter.js'
 import { type Identity, sign } from '../core/identity.js'
 import type { Sealed } from '../core/seal.js'
-import { RELAY_AUTH_CONTEXT } from './server.js'
+import { RELAY_AUTH_CONTEXT, type RelayPolicy } from './server.js'
 
 export interface Subscription {
   /** Resolves once the relay has sent every stored beacon that matches. */
@@ -20,6 +20,8 @@ export class RelayClient {
   private subs = new Map<string, { onBeacon: (b: Beacon) => void; eose: () => void }>()
   private mailHandler?: (m: { id: string; sealed: Sealed }) => void
   private closed = false
+  /** What this relay asks of publishers, as it stated when we connected. */
+  policy: RelayPolicy = { powBits: 0, maxTtlMs: Infinity }
   private closeHandler?: () => void
 
   private constructor(
@@ -49,6 +51,8 @@ export class RelayClient {
           return
         }
         if (m.t === 'challenge' && !ready) {
+          const p = m.policy as Partial<RelayPolicy> | undefined
+          if (p && typeof p.powBits === 'number') client.policy = { powBits: p.powBits, maxTtlMs: typeof p.maxTtlMs === 'number' ? p.maxTtlMs : Infinity }
           const done = () => {
             ready = true
             clearTimeout(timer)
