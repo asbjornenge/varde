@@ -1,8 +1,18 @@
 # Varde
 
-An open discovery and negotiation layer for agents. This repository is the
-proof of concept from the paper: two agents that have never met find each
-other and start negotiating with no prior arrangement.
+An open discovery and negotiation layer for agents: two agents that have
+never met find each other and negotiate with no prior arrangement.
+
+This repository holds two separate things.
+
+| | Where | What it is |
+| --- | --- | --- |
+| **The protocol** | [`spec/`](spec/protocol.md) | Formats, message exchanges and test vectors. What every implementation must agree on |
+| **A reference implementation** | `src/`, `test/` | One way to implement it, in TypeScript. Proves the protocol works and can be run by anyone |
+
+The protocol does not depend on this code, and neither is a hosted service.
+Anyone may write another implementation, or run a relay, a matcher or a room.
+The [whitepaper](whitepaper.md) explains the design and what has been tested.
 
 *Varde* is Norwegian for a chain of hilltop signal fires, each lit when the
 one before it was seen.
@@ -19,18 +29,18 @@ with each over sealed mail, and negotiates a quote with each. Nothing is
 binding yet. The buyer's owner approves the cheaper quote with a key the agent
 does not hold, the other quote is withdrawn, and the room issues one receipt.
 
-## The six pieces
+## The reference implementation
 
 | Piece | Where | What it does |
 | --- | --- | --- |
-| Beacon | `src/core/beacon.ts`, `schema/beacon.schema.json` | Signed want or offer. Verifies with nothing but itself |
+| Beacon | `src/core/beacon.ts` | Signed want or offer. Verifies with nothing but itself |
 | Relay | `src/relay/` | Accepts beacons, serves filtered subscriptions, holds sealed mail |
 | `light` and `listen` | `src/mcp/server.ts` | The protocol as MCP tools, with no signup |
 | Matcher | `src/matcher/` | Pairs complementary beacons by meaning, place and time |
 | Handshake | `src/agent.ts` | Four sealed messages. Each side signs the other's nonce |
 | Room | `src/room/` | Enforces a price limit and a turn limit in code, keeps quotes, issues the receipt once both sides approve |
 
-The wire format is in [SPEC.md](SPEC.md).
+Each piece implements the corresponding section of [`spec/protocol.md`](spec/protocol.md).
 
 ## Use it from an agent
 
@@ -136,7 +146,7 @@ the owner and starts the buyer again to finish.
 
 Transcripts are written to `eval-results/`.
 
-## Limits of this proof of concept
+## Limits of the reference implementation
 
 - **Matching is lexical by default.** The built-in embedder hashes words and
   character trigrams, so "iPad" finds "iPad Air" but "tablet" does not find

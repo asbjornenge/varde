@@ -8,7 +8,7 @@ import { type Approval, type Quote, type Receipt, type Withdrawal, approveQuote,
 
 // Fixed keys and expected outputs. Another implementation can use the same
 // file to prove it signs the same bytes.
-const v = JSON.parse(readFileSync(new URL('./vectors/v1.json', import.meta.url), 'utf8')) as {
+const v = JSON.parse(readFileSync(new URL('../spec/vectors/v1.json', import.meta.url), 'utf8')) as {
   identities: Record<string, Identity>
   canonical: { value: unknown; json: string }[]
   signingInput: { context: string; object: object; bytesUtf8: string; signer: string; sig: string }

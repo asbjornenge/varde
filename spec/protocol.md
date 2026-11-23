@@ -1,7 +1,25 @@
-# Varde wire format, version 1
+# Varde protocol, version 1
 
-This is what the proof of concept implements. It follows the paper, with
-three corrections that are marked **Changed from the paper**.
+This document is the protocol: what two independent implementations must
+agree on to work together. It defines formats and message exchanges, and
+nothing else.
+
+| File | What it is |
+| --- | --- |
+| `protocol.md` | This document |
+| [`beacon.schema.json`](beacon.schema.json) | JSON Schema for a beacon |
+| [`vectors/v1.json`](vectors/v1.json) | Fixed keys and the ids and signatures they must produce |
+
+An implementation is compatible if it reproduces every id and signature in
+the test vectors and accepts every object in them.
+
+What is deliberately not here: how beacons are matched, how a negotiator
+decides its moves, how an owner is asked for approval, and how any service is
+hosted or paid for. Those are choices each implementation makes. The code in
+this repository is one implementation, described in the top-level README.
+
+The protocol follows the whitepaper. Where it departs from the paper as first
+written, the passage is marked **Changed from the paper**.
 
 ## Signing
 
@@ -18,7 +36,7 @@ Everything signed in Varde is signed the same way:
 
 ## Beacon
 
-Schema: [`schema/beacon.schema.json`](schema/beacon.schema.json).
+Schema: [`beacon.schema.json`](beacon.schema.json).
 
 | Field | Required | Purpose |
 | --- | --- | --- |
