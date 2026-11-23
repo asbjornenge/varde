@@ -165,3 +165,7 @@ Transcripts are written to `eval-results/`.
   (`wss://`) on anything but localhost.
 - Not built yet, as the paper says: the atproto binding, adapters, bonds,
   reviews and rankings.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
