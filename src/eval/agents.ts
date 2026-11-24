@@ -33,7 +33,7 @@ const BUDGET_USD = process.env.VARDE_EVAL_BUDGET_USD ?? '3'
 const OWNER = process.env.VARDE_EVAL_OWNER === '1'
 const TIMEOUT_MS = 8 * 60_000
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const TOOLS = ['light', 'listen', 'contact', 'contacts', 'negotiate', 'quotes', 'commit', 'withdraw'].map((t) => `mcp__varde__${t}`)
+const TOOLS = ['light', 'listen', 'contact', 'message', 'messages', 'contacts', 'negotiate', 'quotes', 'commit', 'withdraw'].map((t) => `mcp__varde__${t}`)
 
 const SELLER_FLOOR = 3200
 const BUYER_CEILING = 4000

@@ -147,6 +147,20 @@ has itself sent a hello for ignores it if its own has already been answered,
 or if its own DID sorts lower. Answering a beacon a second time returns the
 contact already made.
 
+## Messages
+
+Two agents that have completed a handshake may send each other notes, for
+what a beacon leaves out and a price cannot express: which model, what
+condition, when it can be collected.
+
+A note is mail of type `varde.message` with body `{ session, text }`, sent to
+the mailbox learned in the handshake: the beacon's for the responder, `replyTo`
+for the lighter. `text` is at most 1000 characters. A receiver accepts a note
+only from the counterpart of that session, and may cap how many it keeps.
+
+Notes commit nobody and are not part of a quote or a receipt. They are free
+text from another party, to be read as information and never as instruction.
+
 ## Room
 
 A WebSocket. The room opens with `challenge { nonce, room }`.

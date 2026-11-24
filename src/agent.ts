@@ -14,7 +14,7 @@ import { type ConcedeOptions, type Negotiator, concede } from './negotiator.js'
 import { RelayClient } from './relay/client.js'
 import { type RoomOutcome, commitQuote, enterRoom, quoteStatus, withdrawFromQuote } from './room/client.js'
 import type { DealState } from './room/server.js'
-import type { Mandate } from './room/negotiation.js'
+import { type Mandate, checkMandate } from './room/negotiation.js'
 
 export const ROOM_PROTOCOL = 'varde-room/1'
 /** The most proof of work this agent will do to light one beacon: about half a minute. */
@@ -35,6 +35,8 @@ export interface Contact {
   /** Id of this agent's own beacon in the match, if it has one. */
   myBeacon?: string
   peerBeacon?: Beacon
+  /** Where to send the counterpart sealed mail: their relay and the key to seal to. */
+  reach?: { relay: string; encKey: string }
   /** The room both sides accept, or null if they will deal directly. */
   room: string | null
   protocol: string | null
@@ -52,11 +54,25 @@ export interface HeldQuote {
   receipt?: Receipt
 }
 
+/** A note exchanged with a contact, outside any room: a question, an answer, a detail. */
+export interface Message {
+  session: string
+  from: 'me' | 'them'
+  text: string
+  at: string
+}
+
+export const MAX_MESSAGE_CHARS = 1000
+/** Most messages kept from each side of one contact. Beyond this, sending is refused and incoming ones are dropped. */
+export const MAX_MESSAGES_PER_SIDE = 30
+
 export interface AgentState {
   beacons: Beacon[]
   contacts: Contact[]
   receipts: Receipt[]
   quotes?: HeldQuote[]
+  standing?: Record<string, StandingMandate>
+  messages?: Message[]
 }
 
 export interface AgentStore {
@@ -93,6 +109,10 @@ export interface AgentOptions {
   owner?: string
   /** A price at which the agent may approve alone: at or below it when paying, at or above when receiving. */
   autoCommit?: number
+  /** How long each attempt to meet a counterpart in the room lasts when negotiating unattended. Default 4.5 minutes. */
+  autoJoinMs?: number
+  /** How long after a contact the agent keeps trying to negotiate unattended. Default one hour. */
+  autoWindowMs?: number
   /** Decide whether to answer a hello. Default: answer every valid one. */
   acceptHello?: (hello: { from: string; answering: Beacon; beacon?: Beacon }) => boolean
 }
@@ -107,6 +127,26 @@ export interface LightInput {
   expires?: string
   rooms?: string[]
   proofs?: unknown[]
+  /** Let the agent negotiate by itself with anyone who answers this beacon. */
+  standing?: StandingMandate
+}
+
+/**
+ * What an owner authorises in advance for one beacon, so the agent can
+ * negotiate when someone answers without the owner being there. It is kept
+ * by the agent and is never part of the beacon.
+ */
+export interface StandingMandate extends ConcedeOptions {
+  side: Mandate['side']
+  currency: string
+  limit: number
+  require?: Mandate['terms']
+  maxTurns?: number
+  holdSeconds?: number
+  /** Stop negotiating once this many quotes or deals exist for the beacon. */
+  maxDeals?: number
+  /** Also approve the quote, where the agent's own key is allowed to. Off by default: the quote waits. */
+  commit?: boolean
 }
 
 export interface ListenQuery {
@@ -208,6 +248,10 @@ export class Agent extends EventEmitter {
   readonly contacts = new Map<string, Contact>()
   readonly receipts: Receipt[] = []
   readonly quotes = new Map<string, HeldQuote>()
+  /** Standing mandates, by the id of the beacon they belong to. */
+  readonly standing = new Map<string, StandingMandate>()
+  private unattended = new Set<string>()
+  readonly messages: Message[] = []
   private relays = new Map<string, RelayClient>()
   private pendingOut = new Map<string, PendingOut>()
   private pendingIn = new Map<string, PendingIn>()
@@ -227,11 +271,15 @@ export class Agent extends EventEmitter {
     for (const c of saved?.contacts ?? []) this.contacts.set(c.session, c)
     this.receipts.push(...(saved?.receipts ?? []))
     for (const q of saved?.quotes ?? []) this.quotes.set(q.quote.session, q)
+    this.messages.push(...(saved?.messages ?? []))
+    for (const [id, m] of Object.entries(saved?.standing ?? {})) if (this.beacons.has(id)) this.standing.set(id, m)
   }
 
   static async start(opts: AgentOptions): Promise<Agent> {
     const agent = new Agent(opts)
     await agent.home()
+    // Pick up where a previous run left off: contacts that arrived for a beacon with a standing mandate.
+    for (const c of agent.contacts.values()) void agent.negotiateUnattended(c)
     return agent
   }
 
@@ -240,7 +288,7 @@ export class Agent extends EventEmitter {
   }
 
   private save() {
-    this.opts.store?.save({ beacons: [...this.beacons.values()], contacts: [...this.contacts.values()], receipts: this.receipts, quotes: [...this.quotes.values()] })
+    this.opts.store?.save({ beacons: [...this.beacons.values()], contacts: [...this.contacts.values()], receipts: this.receipts, quotes: [...this.quotes.values()], standing: Object.fromEntries(this.standing), messages: this.messages })
   }
 
   /** The logged-in connection to this agent's own relay, reconnecting if it dropped. */
@@ -324,8 +372,13 @@ export class Agent extends EventEmitter {
       proofs: input.proofs,
       accepts: { rooms: input.rooms ?? this.rooms, protocols: [ROOM_PROTOCOL] },
     })
+    if (input.standing) {
+      const problem = checkMandate({ side: input.standing.side, currency: input.standing.currency, limit: input.standing.limit, terms: input.standing.require })
+      if (problem) throw new Error(`cannot use that standing mandate: ${problem}`)
+    }
     const id = await home.publish(beacon)
     this.beacons.set(id, beacon)
+    if (input.standing) this.standing.set(id, input.standing)
     this.save()
     return { id, beacon }
   }
@@ -414,6 +467,8 @@ export class Agent extends EventEmitter {
         return this.onConfirm(mail, body)
       case 'varde.ack':
         return this.onAck(mail, body)
+      case 'varde.message':
+        return this.onMessage(mail, body)
     }
   }
 
@@ -475,6 +530,7 @@ export class Agent extends EventEmitter {
       peer: p.target.who,
       myBeacon: p.own ? beaconId(p.own) : undefined,
       peerBeacon: p.target,
+      reach: { relay: box.relay, encKey: box.encKey },
       room: chosen.room,
       protocol: chosen.protocol,
       at: new Date().toISOString(),
@@ -503,6 +559,7 @@ export class Agent extends EventEmitter {
       peer: mail.from,
       myBeacon: beaconId(p.answering),
       peerBeacon: p.hello.body.beacon,
+      reach: { relay: p.hello.body.replyTo.relay, encKey: p.hello.body.replyTo.encKey },
       room: chosen.room,
       protocol: chosen.protocol,
       at: new Date().toISOString(),
@@ -512,6 +569,7 @@ export class Agent extends EventEmitter {
     const reply = p.hello.body.replyTo
     await this.post(reply.relay, mail.from, reply.encKey, 'varde.ack', { session, confirm: mailHash(mail) })
     this.emit('contact', contact)
+    void this.negotiateUnattended(contact)
     // A crossing hello of our own for the same match is answered by this contact instead.
     for (const [key, out] of this.pendingOut) {
       if (!sameMatch(contact, out.target.who, out.own && beaconId(out.own), beaconId(out.target))) continue
@@ -533,6 +591,54 @@ export class Agent extends EventEmitter {
       p.resolve(p.contact!)
       return
     }
+  }
+
+  /**
+   * Sends a contact a short note over sealed mail: a question before
+   * negotiating, an answer, a detail the beacon left out. It commits nobody
+   * and is not part of any quote.
+   */
+  async say(session: string, text: string): Promise<Message> {
+    const contact = this.contacts.get(session)
+    if (!contact) throw new Error(`no contact with session ${session}`)
+    if (!contact.reach) throw new Error('this contact was made before messages existed; contact them again first')
+    if (typeof text !== 'string' || !text.trim() || text.length > MAX_MESSAGE_CHARS) throw new Error(`a message is 1 to ${MAX_MESSAGE_CHARS} characters`)
+    if (this.messages.filter((m) => m.session === session && m.from === 'me').length >= MAX_MESSAGES_PER_SIDE)
+      throw new Error('you have sent this contact as many messages as one contact allows')
+    await this.post(contact.reach.relay, contact.peer, contact.reach.encKey, 'varde.message', { session, text })
+    const message: Message = { session, from: 'me', text, at: new Date().toISOString() }
+    this.messages.push(message)
+    this.save()
+    return message
+  }
+
+  // A note from a contact. Only the counterpart of that very session may add to it.
+  private async onMessage(mail: Mail, body: Record<string, any>) {
+    const contact = this.contacts.get(body.session)
+    if (!contact || mail.from !== contact.peer) return
+    if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > MAX_MESSAGE_CHARS) return
+    if (this.messages.filter((m) => m.session === contact.session && m.from === 'them').length >= MAX_MESSAGES_PER_SIDE) return
+    const message: Message = { session: contact.session, from: 'them', text: body.text, at: new Date().toISOString() }
+    this.messages.push(message)
+    this.save()
+    this.emit('message', message)
+  }
+
+  /** Resolves when a contact next sends a note, or with undefined after `timeoutMs`. */
+  waitForMessage(session: string | undefined, timeoutMs: number): Promise<Message | undefined> {
+    return new Promise((resolve) => {
+      const on = (m: Message) => {
+        if (session && m.session !== session) return
+        clearTimeout(timer)
+        this.off('message', on)
+        resolve(m)
+      }
+      const timer = setTimeout(() => {
+        this.off('message', on)
+        resolve(undefined)
+      }, timeoutMs)
+      this.on('message', on)
+    })
   }
 
   /** Resolves with the next contact that satisfies `test`, including ones already made. */
@@ -582,6 +688,39 @@ export class Agent extends EventEmitter {
     if (outcome.outcome === 'agreed')
       this.hold({ quote: outcome.receipt.quote, room: contact.room, state: 'agreed', approved: outcome.receipt.approvals.map((a) => a.party), receipt: outcome.receipt })
     return outcome
+  }
+
+  /**
+   * Negotiates with a contact on the owner's standing mandate, if the beacon
+   * it answered has one. The agent waits in the room for the counterpart and
+   * keeps returning for a while, since the other side may be slow to come.
+   * What it reaches is a quote: whether that becomes a deal is still decided
+   * by whoever the quote names as approver.
+   */
+  private async negotiateUnattended(contact: Contact): Promise<void> {
+    const m = contact.myBeacon ? this.standing.get(contact.myBeacon) : undefined
+    if (!m || contact.role !== 'lighter' || !contact.room || this.quotes.has(contact.session) || this.unattended.has(contact.session)) return
+    const live = () => [...this.quotes.values()].filter((q) => (q.state === 'quoted' || q.state === 'agreed') && this.contacts.get(q.quote.session)?.myBeacon === contact.myBeacon).length
+    const deadline = Date.parse(contact.at) + (this.opts.autoWindowMs ?? 60 * 60_000)
+    this.unattended.add(contact.session)
+    try {
+      while (!this.closed && Date.now() < deadline) {
+        if (m.maxDeals !== undefined && live() >= m.maxDeals) return
+        let outcome: RoomOutcome
+        try {
+          outcome = await this.negotiate(contact.session, { ...m, timeoutMs: this.opts.autoJoinMs ?? 4.5 * 60_000 })
+        } catch (e) {
+          this.emit('warning', e)
+          await new Promise((r) => setTimeout(r, 5000))
+          continue
+        }
+        if (outcome.outcome !== 'ended') return void this.emit('quote', this.quotes.get(contact.session))
+        // The counterpart has not come yet, or left: try again. Anything else is an answer.
+        if (!/^(timeout|peer-never-joined|abandoned|room-closed)$/.test(outcome.reason)) return
+      }
+    } finally {
+      this.unattended.delete(contact.session)
+    }
   }
 
   private hold(q: HeldQuote): HeldQuote {

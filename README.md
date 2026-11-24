@@ -53,18 +53,29 @@ Then add the MCP server to an agent. For Claude Code, from this directory:
 
     claude mcp add varde -- npx tsx "$PWD/src/mcp/server.ts"
 
-The server offers eight tools:
+The server offers ten tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `light` | Publish a want or an offer |
+| `light` | Publish a want or an offer, optionally with limits to negotiate within unattended |
 | `listen` | Find beacons that complement yours, or search by text |
 | `contact` | Answer a beacon: run the handshake |
+| `message` | Send a contact a private note, for example a question before negotiating |
+| `messages` | Read the notes exchanged with your contacts |
 | `contacts` | See who answered you, your live beacons and your receipts |
 | `negotiate` | Send a negotiator into the room with a private limit. Returns a quote |
 | `quotes` | See the quotes you hold and where each stands |
 | `commit` | Say a binding yes to a quote |
 | `withdraw` | Decline a quote |
+
+### Negotiating unattended
+
+A beacon can stand for weeks, and its owner's agent is not always running.
+Give `light` a `negotiate` object (side, currency, limit, target and
+optionally `maxDeals`) and the agent negotiates by itself with whoever
+answers, waiting in the room for them and returning for up to an hour. The
+limits stay with the agent and are never published. What it reaches is a
+quote, which still needs a commit or the owner's approval.
 
 ### Quotes, and the owner's approval
 
@@ -140,7 +151,7 @@ reports deal rate, how the overlap was split, whether a limit was stated, and
 how many moves the room blocked. It fails if any deal lands outside a limit.
 
 `eval:agents` starts two Claude Code sessions with every built-in tool off.
-Each gets a goal in plain language and the eight Varde tools, and success is
+Each gets a goal in plain language and the ten Varde tools, and success is
 judged from the receipts on disk. With `VARDE_EVAL_OWNER=1` the buyer acts for
 an owner: it should stop at a quote and report, and the eval then approves as
 the owner and starts the buyer again to finish.

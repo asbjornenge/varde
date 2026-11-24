@@ -62,7 +62,7 @@ test('with only the MCP tools: beacons, a quote, the owner\'s approval from the 
   const asOwner = (...args: string[]) => node('src/bin/owner.ts', args, { VARDE_OWNER_HOME: ownerHome, VARDE_HOME: buyerHome })
   assert.deepEqual(
     (await seller.listTools()).tools.map((t) => t.name).sort(),
-    ['commit', 'contact', 'contacts', 'light', 'listen', 'negotiate', 'quotes', 'withdraw'],
+    ['commit', 'contact', 'contacts', 'light', 'listen', 'message', 'messages', 'negotiate', 'quotes', 'withdraw'],
   )
 
   const offer = await call(seller, 'light', { what: 'Selling a used iPad Air, 64 GB', intent: 'offer', where: 'Stavanger', ttlHours: 720 })
