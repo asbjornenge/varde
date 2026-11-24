@@ -214,7 +214,7 @@ the quote by id, so neither can be moved to other terms.
 ### Approval by passkey
 
 An approver may be a passkey, so that a person can approve from a phone with a
-key that never leaves it. Such an approver is a `did:key` holding a P-256 key
+key that the service asking for the approval never holds. Such an approver is a `did:key` holding a P-256 key
 (multicodec `0x1200`, so the identifier starts `did:key:zDn`). A P-256 key
 can approve a quote and do nothing else: it cannot light a beacon, send mail
 or join a room.

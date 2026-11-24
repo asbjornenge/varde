@@ -4,6 +4,12 @@ import type { Agent, Contact, HeldQuote } from '../agent.js'
 import { type Beacon, beaconId, whatIntent, whatTags, whatText } from '../core/beacon.js'
 import { type Approval, type Quote, quoteId } from '../core/receipt.js'
 
+/**
+ * The longest a tool waits before answering. MCP clients commonly give up on a
+ * call after 60 seconds, so a wait must end before that and be repeated.
+ */
+export const MAX_WAIT_SECONDS = 50
+
 /** What the Varde tools need from whoever hosts them. */
 export interface ToolContext {
   /** The agent the current caller acts through. */
@@ -147,7 +153,7 @@ export function registerVardeTools(server: McpServer, ctx: ToolContext): void {
       description:
         'List completed handshakes, newest first: agents that answered your beacons and agents you contacted. Each has a `session` id for `negotiate`. Also lists your live beacons and the receipts of deals you have closed. After lighting a beacon, call this with `waitSeconds` to wait for someone to answer it.',
       inputSchema: {
-        waitSeconds: z.number().min(0).max(300).default(0).describe('If you have no contacts yet, wait up to this long for the first one to arrive.'),
+        waitSeconds: z.number().min(0).max(MAX_WAIT_SECONDS).default(0).describe('If you have no contacts yet, wait up to this long for the first one to arrive. Call again to keep waiting.'),
       },
     },
     ({ waitSeconds }) =>
@@ -176,7 +182,7 @@ export function registerVardeTools(server: McpServer, ctx: ToolContext): void {
         limit: z.number().positive().describe('Hard limit your owner set: the most to pay, or the least to accept. Kept private.'),
         target: z.number().positive().describe('The price to open at: lower than the limit when paying, higher when receiving.'),
         maxTurns: z.number().int().positive().optional().describe('Your own cap on turns. The room has one as well.'),
-        waitSeconds: z.number().positive().max(600).default(180).describe('How long to wait for the other side and the outcome.'),
+        waitSeconds: z.number().positive().max(600).default(MAX_WAIT_SECONDS).describe('How long to wait for the other side to join and for the outcome. Values above 50 may run past your own time limit for a tool call.'),
       },
     },
     ({ session, side, currency, limit, target, maxTurns, waitSeconds }) =>
@@ -204,7 +210,7 @@ export function registerVardeTools(server: McpServer, ctx: ToolContext): void {
       description:
         'List the quotes you hold and where each stands: `quoted` (open), `agreed` (both sides committed, the deal is made), `withdrawn` or `lapsed`. Asks the room for the current state of open quotes. Use this to compare offers, and to see whether the other side has committed. After you commit, call it with `waitSeconds` to wait for the other side instead of asking repeatedly.',
       inputSchema: {
-        waitSeconds: z.number().min(0).max(300).default(0).describe('Wait up to this long for an open quote to be decided: made, withdrawn or lapsed.'),
+        waitSeconds: z.number().min(0).max(MAX_WAIT_SECONDS).default(0).describe('Wait up to this long for an open quote to be decided: made, withdrawn or lapsed. Call again to keep waiting.'),
       },
     },
     ({ waitSeconds }) =>
