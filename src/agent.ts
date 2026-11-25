@@ -379,6 +379,7 @@ export class Agent extends EventEmitter {
     const id = await home.publish(beacon)
     this.beacons.set(id, beacon)
     if (input.standing) this.standing.set(id, input.standing)
+    this.emit('lit', { id, beacon })
     this.save()
     return { id, beacon }
   }

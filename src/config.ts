@@ -15,6 +15,7 @@ export const config = (env: NodeJS.ProcessEnv = process.env) => ({
   relayData: env.VARDE_RELAY_DATA,
   relayPowBits: Number(env.VARDE_RELAY_POW_BITS ?? 0),
   relayPublishesPerMinute: env.VARDE_RELAY_PUBLISHES_PER_MINUTE ? Number(env.VARDE_RELAY_PUBLISHES_PER_MINUTE) : undefined,
+  relayTrustedPass: env.VARDE_RELAY_TRUSTED_PASS || undefined,
   relayTrustProxy: env.VARDE_RELAY_TRUST_PROXY === '1',
   host: env.VARDE_HOST ?? '127.0.0.1',
   relayPort: Number(env.VARDE_RELAY_PORT ?? 7447),

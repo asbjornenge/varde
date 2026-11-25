@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { type WebSocket, WebSocketServer } from 'ws'
@@ -36,6 +37,13 @@ export interface RelayOptions {
   /** Beacons and mail one address may send per minute. Default 600 each. */
   publishesPerMinute?: number
   mailPerMinute?: number
+  /**
+   * A shared secret for publishers the operator trusts, such as a bridge that
+   * feeds in beacons it has already vetted from another network. A publish
+   * that carries it skips proof of work and the per-address limit. Signature
+   * and expiry are still checked.
+   */
+  trustedPass?: string
   /** Take the client address from X-Forwarded-For. Only behind a proxy you run. */
   trustProxy?: boolean
   /**
@@ -171,16 +179,18 @@ export async function startRelay(opts: RelayOptions = {}): Promise<Relay> {
   const timer = setInterval(sweep, opts.sweepMs ?? 5000)
   timer.unref()
 
-  function publish(c: Conn, ref: unknown, beacon: Beacon) {
+  function publish(c: Conn, ref: unknown, beacon: Beacon, pass?: unknown) {
+    const trusted = !!opts.trustedPass && typeof pass === 'string' && pass.length === opts.trustedPass.length && timingSafeEqual(Buffer.from(pass), Buffer.from(opts.trustedPass))
     const problem = checkBeacon(beacon, now())
     if (problem) return send(c, { t: 'error', ref, reason: problem })
     if (Date.parse(beacon.expires) - now() > maxTtlMs) return send(c, { t: 'error', ref, reason: 'expires too far ahead' })
     const id = beaconId(beacon)
     if (!beacons.has(id)) {
-      if (minPowBits && powBits(beacon) < minPowBits) return send(c, { t: 'error', ref, reason: `needs ${minPowBits} bits of proof of work` })
-      if (!addressState(c.address).publish.take(Date.now())) return send(c, { t: 'error', ref, reason: 'rate limited' })
+      if (!trusted && minPowBits && powBits(beacon) < minPowBits) return send(c, { t: 'error', ref, reason: `needs ${minPowBits} bits of proof of work` })
+      if (!trusted && !addressState(c.address).publish.take(Date.now())) return send(c, { t: 'error', ref, reason: 'rate limited' })
       let held = 0
       for (const b of beacons.values()) if (b.who === beacon.who && !isExpired(b, now())) held++
+      // The cap per key holds for trusted publishers too: it bounds what any one key can occupy.
       if (held >= maxPerWho) return send(c, { t: 'error', ref, reason: 'too many live beacons for this key' })
       beacons.set(id, beacon)
       changed()
@@ -244,7 +254,7 @@ export async function startRelay(opts: RelayOptions = {}): Promise<Relay> {
       const ref = m.ref
       switch (m.t) {
         case 'publish':
-          return publish(c, ref, m.beacon as Beacon)
+          return publish(c, ref, m.beacon as Beacon, m.pass)
         case 'sub':
           return subscribe(c, ref, m.sub, m.filter)
         case 'unsub':

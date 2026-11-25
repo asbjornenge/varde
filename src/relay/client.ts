@@ -101,9 +101,9 @@ export class RelayClient {
     })
   }
 
-  /** Publishes a beacon and returns its id. */
-  async publish(beacon: Beacon): Promise<string> {
-    return String((await this.request({ t: 'publish', beacon })).id)
+  /** Publishes a beacon and returns its id. `pass` is the relay's trusted-publisher secret, for bridges. */
+  async publish(beacon: Beacon, pass?: string): Promise<string> {
+    return String((await this.request({ t: 'publish', beacon, ...(pass ? { pass } : {}) })).id)
   }
 
   subscribe(filter: Filter, onBeacon: (b: Beacon) => void): Subscription {

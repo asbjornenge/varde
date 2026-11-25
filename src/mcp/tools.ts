@@ -18,9 +18,14 @@ export interface ToolContext {
   approvalFor?: (quote: Quote, agent: Agent) => Promise<Approval | undefined> | Approval | undefined
   /** A link the owner can open to approve this quote, if the host offers one. */
   approvalLink?: (quote: Quote, agent: Agent) => string | undefined
+  /**
+   * Who stands behind a beacon, if the host can vouch for it: for example the
+   * account whose repository the beacon was published in. Shown beside the beacon.
+   */
+  litBy?: (beacon: Beacon) => Record<string, unknown> | undefined
 }
 
-const describeBeacon = (b: Beacon) => ({
+const describeBeacon = (b: Beacon, ctx?: ToolContext) => ({
   id: beaconId(b),
   who: b.who,
   what: whatText(b),
@@ -29,14 +34,15 @@ const describeBeacon = (b: Beacon) => ({
   scope: b.scope,
   expires: b.expires,
   rooms: b.accepts?.rooms ?? [],
+  ...(ctx?.litBy?.(b) ? { litBy: ctx.litBy(b) } : {}),
 })
 
-const describeContact = (x: Contact) => ({
+const describeContact = (x: Contact, ctx?: ToolContext) => ({
   session: x.session,
   role: x.role,
   peer: x.peer,
   myBeacon: x.myBeacon,
-  peerBeacon: x.peerBeacon ? describeBeacon(x.peerBeacon) : undefined,
+  peerBeacon: x.peerBeacon ? describeBeacon(x.peerBeacon, ctx) : undefined,
   room: x.room,
   at: x.at,
 })
@@ -146,7 +152,7 @@ export function registerVardeTools(server: McpServer, ctx: ToolContext): void {
       run(async () => {
         if (!beacon && !query) throw new Error('give either `beacon` or `query`')
         const matches = await (await ctx.agent()).listen({ beacon, text: query, intent, where, limit })
-        return { note: UNTRUSTED, matches: matches.map((m) => ({ score: m.score, ...describeBeacon(m.beacon) })) }
+        return { note: UNTRUSTED, matches: matches.map((m) => ({ score: m.score, ...describeBeacon(m.beacon, ctx) })) }
       }),
   )
 
@@ -165,7 +171,7 @@ export function registerVardeTools(server: McpServer, ctx: ToolContext): void {
         const a = await ctx.agent()
         const found = await a.find(beacon)
         if (!found) throw new Error('no live beacon with that id on the relay')
-        return describeContact(await a.contact(found, { as }))
+        return describeContact(await a.contact(found, { as }), ctx)
       }),
   )
 
@@ -220,8 +226,8 @@ export function registerVardeTools(server: McpServer, ctx: ToolContext): void {
         return {
           you: a.did,
           note: UNTRUSTED,
-          beacons: [...a.beacons.values()].map(describeBeacon),
-          contacts: [...a.contacts.values()].sort((x, y) => y.at.localeCompare(x.at)).map(describeContact),
+          beacons: [...a.beacons.values()].map((b) => describeBeacon(b, ctx)),
+          contacts: [...a.contacts.values()].sort((x, y) => y.at.localeCompare(x.at)).map((x) => describeContact(x, ctx)),
           receipts: a.receipts,
         }
       }),

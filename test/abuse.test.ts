@@ -92,3 +92,17 @@ test('the relay caps connections from one address', async () => {
   for (const c of [...open, again]) c.close()
   await relay.close()
 })
+
+test('a trusted publisher skips the cost and the rate limit, but not the signature check', async () => {
+  const relay = await startRelay({ minPowBits: 12, publishesPerMinute: 2, trustedPass: 'bridge-secret' })
+  const c = await RelayClient.connect(relay.url)
+  await assert.rejects(c.publish(beacon('no work, no pass')), /proof of work/)
+  for (const wrong of ['bridge-secreT', 'bridge-secret-and-more', '']) await assert.rejects(c.publish(beacon('wrong pass'), wrong), /proof of work/)
+  // With the pass: no work needed, and well past the two a minute anyone else gets.
+  for (let i = 0; i < 6; i++) await c.publish(beacon(`vetted elsewhere ${i}`), 'bridge-secret')
+  assert.equal(relay.stats().beacons, 6)
+  const forged = { ...beacon('honest'), what: 'tampered' }
+  await assert.rejects(c.publish(forged, 'bridge-secret'), /bad signature/)
+  c.close()
+  await relay.close()
+})
