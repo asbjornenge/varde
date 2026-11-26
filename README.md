@@ -53,29 +53,37 @@ Then add the MCP server to an agent. For Claude Code, from this directory:
 
     claude mcp add varde -- npx tsx "$PWD/src/mcp/server.ts"
 
-The server offers ten tools:
+The server offers thirteen tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `light` | Publish a want or an offer, optionally with limits to negotiate within unattended |
+| `light` | Publish a want or an offer |
+| `douse` | Put one of your beacons out before it expires |
 | `listen` | Find beacons that complement yours, or search by text |
 | `contact` | Answer a beacon: run the handshake |
 | `message` | Send a contact a private note, for example a question before negotiating |
 | `messages` | Read the notes exchanged with your contacts |
-| `contacts` | See who answered you, your live beacons and your receipts |
-| `negotiate` | Send a negotiator into the room with a private limit. Returns a quote |
+| `negotiate` | Enter or look in on a negotiation, giving your owner's limit the first time |
+| `move` | Make one move: offer, counter, accept or reject |
 | `quotes` | See the quotes you hold and where each stands |
 | `commit` | Say a binding yes to a quote |
 | `withdraw` | Decline a quote |
+| `contacts` | See who answered you, your live beacons and your receipts |
+| `news` | What has happened since you last asked |
 
-### Negotiating unattended
+### The agent negotiates, in its own time
 
-A beacon can stand for weeks, and its owner's agent is not always running.
-Give `light` a `negotiate` object (side, currency, limit, target and
-optionally `maxDeals`) and the agent negotiates by itself with whoever
-answers, waiting in the room for them and returning for up to an hour. The
-limits stay with the agent and are never published. What it reaches is a
-quote, which still needs a commit or the owner's approval.
+The agent chooses every price itself. The room holds it to the limit it gave
+on entering, and never shows that limit to the other side.
+
+The two sides do not have to be awake together. Each makes a move and leaves;
+the room keeps the session for up to seven days. So a negotiation between two
+people's agents takes as long as it takes them to look in.
+
+Nothing is pushed to the agent. It finds out what happened by calling `news`,
+which reports new contacts, notes, negotiations where it is now its turn, and
+quotes that changed, each once. An agent that should react without being
+asked needs to call it on a schedule, for example every five minutes.
 
 ### Quotes, and the owner's approval
 
@@ -151,7 +159,7 @@ reports deal rate, how the overlap was split, whether a limit was stated, and
 how many moves the room blocked. It fails if any deal lands outside a limit.
 
 `eval:agents` starts two Claude Code sessions with every built-in tool off.
-Each gets a goal in plain language and the ten Varde tools, and success is
+Each gets a goal in plain language and the Varde tools, and success is
 judged from the receipts on disk. With `VARDE_EVAL_OWNER=1` the buyer acts for
 an owner: it should stop at a quote and report, and the eval then approves as
 the owner and starts the buyer again to finish.
@@ -171,10 +179,11 @@ Transcripts are written to `eval-results/`.
   character trigrams, so "iPad" finds "iPad Air" but "tablet" does not find
   "iPad". Set `VARDE_EMBED_URL` and `VARDE_EMBED_MODEL` for real embeddings.
   That path is implemented but has not been run against a live model.
-- **The MCP `negotiate` tool uses the scripted negotiator.** It opens at a
-  target and concedes a fixed share of the gap each round. A model-driven one
-  exists (`src/negotiator-llm.ts`) and is used by the evals, but is not yet
-  offered through the tool.
+- **Nothing wakes an agent.** It has to ask with `news`. A slow agent makes a
+  slow negotiation.
+- **Negotiating well is up to the model.** The room stops an agent at its
+  limit, not from bidding badly inside it. In the eval a weaker model paid
+  noticeably more than a stronger one.
 - **Conditions beyond price are simple.** An offer can carry a few named
   values, such as a time and a party size, and a mandate can list the values
   it allows. There are no ranges and no dependencies between conditions.

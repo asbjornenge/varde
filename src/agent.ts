@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { type Beacon, type Intent, type Scope, beaconId, checkBeacon, isExpired, lightBeacon, mailboxOf } from './core/beacon.js'
+import { type Beacon, type Intent, type Scope, beaconId, checkBeacon, isExpired, lightBeacon, mailboxOf, retractBeacon } from './core/beacon.js'
 import { b64u, nonce, sha256 } from './core/bytes.js'
 import { canonicalize } from './core/canonical.js'
 import type { Identity } from './core/identity.js'
@@ -12,9 +12,9 @@ import type { Embedder } from './matcher/embed.js'
 import { type Match, Matcher } from './matcher/matcher.js'
 import { type ConcedeOptions, type Negotiator, concede } from './negotiator.js'
 import { RelayClient } from './relay/client.js'
-import { type RoomOutcome, commitQuote, enterRoom, quoteStatus, withdrawFromQuote } from './room/client.js'
+import { type RoomOutcome, type RoomView, commitQuote, enterRoom, quoteStatus, visitRoom, withdrawFromQuote } from './room/client.js'
 import type { DealState } from './room/server.js'
-import { type Mandate, checkMandate } from './room/negotiation.js'
+import { type Mandate, type Move, checkMandate } from './room/negotiation.js'
 
 export const ROOM_PROTOCOL = 'varde-room/1'
 /** The most proof of work this agent will do to light one beacon: about half a minute. */
@@ -66,13 +66,30 @@ export const MAX_MESSAGE_CHARS = 1000
 /** Most messages kept from each side of one contact. Beyond this, sending is refused and incoming ones are dropped. */
 export const MAX_MESSAGES_PER_SIDE = 30
 
+/** What `news` has already reported, so each thing is told once. */
+interface Seen {
+  contacts: string[]
+  messages: number
+  turns: Record<string, string>
+  quotes: Record<string, string>
+}
+
+export interface News {
+  contacts: Contact[]
+  messages: Message[]
+  negotiations: ({ session: string } & RoomView)[]
+  quotes: HeldQuote[]
+}
+
 export interface AgentState {
   beacons: Beacon[]
   contacts: Contact[]
   receipts: Receipt[]
   quotes?: HeldQuote[]
-  standing?: Record<string, StandingMandate>
   messages?: Message[]
+  negotiations?: Record<string, Mandate>
+  /** What the owner's agent has already been told about, for `news`. */
+  seen?: Seen
 }
 
 export interface AgentStore {
@@ -109,10 +126,6 @@ export interface AgentOptions {
   owner?: string
   /** A price at which the agent may approve alone: at or below it when paying, at or above when receiving. */
   autoCommit?: number
-  /** How long each attempt to meet a counterpart in the room lasts when negotiating unattended. Default 4.5 minutes. */
-  autoJoinMs?: number
-  /** How long after a contact the agent keeps trying to negotiate unattended. Default one hour. */
-  autoWindowMs?: number
   /** Decide whether to answer a hello. Default: answer every valid one. */
   acceptHello?: (hello: { from: string; answering: Beacon; beacon?: Beacon }) => boolean
 }
@@ -127,26 +140,6 @@ export interface LightInput {
   expires?: string
   rooms?: string[]
   proofs?: unknown[]
-  /** Let the agent negotiate by itself with anyone who answers this beacon. */
-  standing?: StandingMandate
-}
-
-/**
- * What an owner authorises in advance for one beacon, so the agent can
- * negotiate when someone answers without the owner being there. It is kept
- * by the agent and is never part of the beacon.
- */
-export interface StandingMandate extends ConcedeOptions {
-  side: Mandate['side']
-  currency: string
-  limit: number
-  require?: Mandate['terms']
-  maxTurns?: number
-  holdSeconds?: number
-  /** Stop negotiating once this many quotes or deals exist for the beacon. */
-  maxDeals?: number
-  /** Also approve the quote, where the agent's own key is allowed to. Off by default: the quote waits. */
-  commit?: boolean
 }
 
 export interface ListenQuery {
@@ -248,9 +241,9 @@ export class Agent extends EventEmitter {
   readonly contacts = new Map<string, Contact>()
   readonly receipts: Receipt[] = []
   readonly quotes = new Map<string, HeldQuote>()
-  /** Standing mandates, by the id of the beacon they belong to. */
-  readonly standing = new Map<string, StandingMandate>()
-  private unattended = new Set<string>()
+  /** The mandate given for each negotiation this agent has entered, so every visit presents the same one. */
+  readonly negotiations = new Map<string, Mandate>()
+  private seen: Seen = { contacts: [], messages: 0, turns: {}, quotes: {} }
   readonly messages: Message[] = []
   private relays = new Map<string, RelayClient>()
   private pendingOut = new Map<string, PendingOut>()
@@ -272,14 +265,13 @@ export class Agent extends EventEmitter {
     this.receipts.push(...(saved?.receipts ?? []))
     for (const q of saved?.quotes ?? []) this.quotes.set(q.quote.session, q)
     this.messages.push(...(saved?.messages ?? []))
-    for (const [id, m] of Object.entries(saved?.standing ?? {})) if (this.beacons.has(id)) this.standing.set(id, m)
+    for (const [id, m] of Object.entries(saved?.negotiations ?? {})) this.negotiations.set(id, m)
+    if (saved?.seen) this.seen = saved.seen
   }
 
   static async start(opts: AgentOptions): Promise<Agent> {
     const agent = new Agent(opts)
     await agent.home()
-    // Pick up where a previous run left off: contacts that arrived for a beacon with a standing mandate.
-    for (const c of agent.contacts.values()) void agent.negotiateUnattended(c)
     return agent
   }
 
@@ -288,7 +280,7 @@ export class Agent extends EventEmitter {
   }
 
   private save() {
-    this.opts.store?.save({ beacons: [...this.beacons.values()], contacts: [...this.contacts.values()], receipts: this.receipts, quotes: [...this.quotes.values()], standing: Object.fromEntries(this.standing), messages: this.messages })
+    this.opts.store?.save({ beacons: [...this.beacons.values()], contacts: [...this.contacts.values()], receipts: this.receipts, quotes: [...this.quotes.values()], messages: this.messages, negotiations: Object.fromEntries(this.negotiations), seen: this.seen })
   }
 
   /** The logged-in connection to this agent's own relay, reconnecting if it dropped. */
@@ -372,13 +364,8 @@ export class Agent extends EventEmitter {
       proofs: input.proofs,
       accepts: { rooms: input.rooms ?? this.rooms, protocols: [ROOM_PROTOCOL] },
     })
-    if (input.standing) {
-      const problem = checkMandate({ side: input.standing.side, currency: input.standing.currency, limit: input.standing.limit, terms: input.standing.require })
-      if (problem) throw new Error(`cannot use that standing mandate: ${problem}`)
-    }
     const id = await home.publish(beacon)
     this.beacons.set(id, beacon)
-    if (input.standing) this.standing.set(id, input.standing)
     this.emit('lit', { id, beacon })
     this.save()
     return { id, beacon }
@@ -570,7 +557,6 @@ export class Agent extends EventEmitter {
     const reply = p.hello.body.replyTo
     await this.post(reply.relay, mail.from, reply.encKey, 'varde.ack', { session, confirm: mailHash(mail) })
     this.emit('contact', contact)
-    void this.negotiateUnattended(contact)
     // A crossing hello of our own for the same match is answered by this contact instead.
     for (const [key, out] of this.pendingOut) {
       if (!sameMatch(contact, out.target.who, out.own && beaconId(out.own), beaconId(out.target))) continue
@@ -692,36 +678,84 @@ export class Agent extends EventEmitter {
   }
 
   /**
-   * Negotiates with a contact on the owner's standing mandate, if the beacon
-   * it answered has one. The agent waits in the room for the counterpart and
-   * keeps returning for a while, since the other side may be slow to come.
-   * What it reaches is a quote: whether that becomes a deal is still decided
-   * by whoever the quote names as approver.
+   * Looks in on a negotiation, and optionally makes one move. The first visit
+   * must give the mandate; it is remembered and presented on every later
+   * visit, and the room refuses any attempt to change it. The parties do not
+   * have to be there together: make a move, leave, and look in again later.
    */
-  private async negotiateUnattended(contact: Contact): Promise<void> {
-    const m = contact.myBeacon ? this.standing.get(contact.myBeacon) : undefined
-    if (!m || contact.role !== 'lighter' || !contact.room || this.quotes.has(contact.session) || this.unattended.has(contact.session)) return
-    const live = () => [...this.quotes.values()].filter((q) => (q.state === 'quoted' || q.state === 'agreed') && this.contacts.get(q.quote.session)?.myBeacon === contact.myBeacon).length
-    const deadline = Date.parse(contact.at) + (this.opts.autoWindowMs ?? 60 * 60_000)
-    this.unattended.add(contact.session)
-    try {
-      while (!this.closed && Date.now() < deadline) {
-        if (m.maxDeals !== undefined && live() >= m.maxDeals) return
-        let outcome: RoomOutcome
-        try {
-          outcome = await this.negotiate(contact.session, { ...m, timeoutMs: this.opts.autoJoinMs ?? 4.5 * 60_000 })
-        } catch (e) {
-          this.emit('warning', e)
-          await new Promise((r) => setTimeout(r, 5000))
-          continue
-        }
-        if (outcome.outcome !== 'ended') return void this.emit('quote', this.quotes.get(contact.session))
-        // The counterpart has not come yet, or left: try again. Anything else is an answer.
-        if (!/^(timeout|peer-never-joined|abandoned|room-closed)$/.test(outcome.reason)) return
-      }
-    } finally {
-      this.unattended.delete(contact.session)
+  async visit(session: string, o: { mandate?: Pick<Mandate, 'side' | 'currency' | 'limit' | 'terms' | 'holdSeconds'>; move?: Move } = {}): Promise<RoomView> {
+    const contact = this.contacts.get(session)
+    if (!contact) throw new Error(`no contact with session ${session}`)
+    if (!contact.room) throw new Error('this contact has no room in common; deal directly instead')
+    let mandate = this.negotiations.get(session)
+    if (!mandate) {
+      if (!o.mandate) throw new Error('say which side you are on, the currency and your limit the first time you enter a negotiation')
+      mandate = { ...o.mandate, owner: this.opts.owner, autoCommit: this.opts.owner ? this.opts.autoCommit : undefined }
+      const problem = checkMandate(mandate)
+      if (problem) throw new Error(problem)
+      // Drop undefined fields so the mandate is byte-for-byte the same on every visit.
+      mandate = JSON.parse(JSON.stringify(mandate)) as Mandate
     }
+    const view = await visitRoom({
+      roomUrl: contact.room,
+      identity: this.identity,
+      session,
+      peer: contact.peer,
+      beacon: contact.myBeacon ? this.beacons.get(contact.myBeacon) : undefined,
+      mandate,
+      move: o.move,
+    })
+    // Remembered only once the room has accepted it, so a refused first visit can be retried with other values.
+    if (!this.negotiations.has(session)) {
+      this.negotiations.set(session, mandate)
+      this.save()
+    }
+    if (view.quote && !this.quotes.has(session)) this.hold({ quote: view.quote, room: contact.room, state: 'quoted', approved: [] })
+    return view
+  }
+
+  /**
+   * What has happened since this was last asked: new contacts, new notes,
+   * negotiations where it is now this side's turn, and quotes that changed.
+   * Made for an agent that is only awake now and then and asks on waking.
+   */
+  async news(): Promise<News> {
+    const contacts = [...this.contacts.values()].filter((c) => !this.seen.contacts.includes(c.session))
+    const messages = this.messages.slice(this.seen.messages).filter((m) => m.from === 'them')
+    const negotiations: News['negotiations'] = []
+    for (const session of this.negotiations.keys()) {
+      if (this.quotes.has(session)) continue
+      const view = await this.visit(session).catch(() => undefined)
+      if (!view) continue
+      // Worth telling when something moved: a new move, a turn that became ours, an ending.
+      const mark = `${view.status}/${view.history.length}/${view.yourTurn}`
+      if (this.seen.turns[session] !== mark) negotiations.push({ session, ...view })
+      this.seen.turns[session] = mark
+    }
+    const quotes: HeldQuote[] = []
+    for (const q of [...this.quotes.values()]) {
+      const now = q.state === 'quoted' ? await this.refresh(q.quote.session).catch(() => q) : q
+      const mark = `${now.state}/${now.approved.length}`
+      if (this.seen.quotes[now.quote.session] !== mark) quotes.push(now)
+      this.seen.quotes[now.quote.session] = mark
+    }
+    this.seen.contacts = [...this.contacts.keys()]
+    this.seen.messages = this.messages.length
+    this.save()
+    return { contacts, messages, negotiations, quotes }
+  }
+
+  /**
+   * Puts a beacon out before its time. The relay stops serving it and will
+   * not take it back. Contacts and quotes already made are unaffected.
+   */
+  async douse(id: string): Promise<void> {
+    const beacon = this.beacons.get(id)
+    if (!beacon) throw new Error(`no live beacon of yours with id ${id}`)
+    await (await this.home()).retract(retractBeacon(this.identity, beacon))
+    this.beacons.delete(id)
+    this.save()
+    this.emit('doused', { id, beacon })
   }
 
   private hold(q: HeldQuote): HeldQuote {
@@ -731,7 +765,13 @@ export class Agent extends EventEmitter {
     return q
   }
 
-  private held(session: string): HeldQuote {
+  /**
+   * The quote for a session. A quote is issued when the second party signs,
+   * which may be while this agent is away, so if none is held yet the room is
+   * asked before giving up.
+   */
+  private async held(session: string): Promise<HeldQuote> {
+    if (!this.quotes.has(session) && this.negotiations.has(session)) await this.visit(session).catch(() => {})
     const q = this.quotes.get(session)
     if (!q) throw new Error(`no quote for session ${session}`)
     return q
@@ -749,7 +789,7 @@ export class Agent extends EventEmitter {
 
   /** Asks the room where a quote stands: still open, approved by whom, made, withdrawn or lapsed. */
   async refresh(session: string): Promise<HeldQuote> {
-    const q = this.held(session)
+    const q = await this.held(session)
     if (q.state !== 'quoted') return q
     const s = await quoteStatus(q.room, session, q.quote)
     return this.hold({ ...q, state: s.state, approved: s.approved, receipt: s.receipt })
@@ -762,7 +802,7 @@ export class Agent extends EventEmitter {
    * is made once the other side has approved as well.
    */
   async commit(session: string, approval?: Approval): Promise<HeldQuote> {
-    const q = this.held(session)
+    const q = await this.held(session)
     const mine = q.quote.parties.find((p) => p.did === this.did)!
     if (!approval && mine.approver !== this.did)
       throw new Error('this quote needs the owner\'s approval: the agent may not commit to it alone')
@@ -775,7 +815,7 @@ export class Agent extends EventEmitter {
 
   /** Says no to a quote. Needs no owner. Has no effect once the deal is made. */
   async withdraw(session: string): Promise<HeldQuote> {
-    const q = this.held(session)
+    const q = await this.held(session)
     const s = await withdrawFromQuote(q.room, q.quote, withdrawQuote(this.identity, q.quote))
     return this.hold({ ...q, state: s.state, approved: s.approved, receipt: s.receipt })
   }

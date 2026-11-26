@@ -217,8 +217,14 @@ test('crossing contact: two agents that answer each other\'s beacons at the same
       seller.negotiate(s.session, { side: 'receive', currency: 'NOK', limit: 3200, target: 4400 }),
     ])
     assert.deepEqual([qb.outcome, qs.outcome], ['quoted', 'quoted'])
-    // And the room will not open a second negotiation on a session that already has a quote.
+    // Coming back to a session that already has a quote shows that quote. It does not start another negotiation.
     const again = await buyer.negotiate(b.session, { side: 'pay', currency: 'NOK', limit: 4000, target: 2800, timeoutMs: 500 })
-    assert.deepEqual([again.outcome, (again as { reason?: string }).reason], ['ended', 'refused: this session already has a quote'])
+    assert.equal(again.outcome, 'quoted')
+    assert.deepEqual(again.outcome === 'quoted' && again.quote, qb.outcome === 'quoted' && qb.quote)
+    // A stranger who learns the session id is not shown it.
+    const stranger = await agent()
+    stranger.contacts.set(b.session, { ...b, peer: seller.did, myBeacon: undefined })
+    const peek = await stranger.negotiate(b.session, { side: 'pay', currency: 'NOK', limit: 4000, target: 2800, timeoutMs: 500 })
+    assert.deepEqual([peek.outcome, (peek as { reason?: string }).reason], ['ended', 'refused: session is full'])
   }
 })

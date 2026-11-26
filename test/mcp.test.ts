@@ -62,7 +62,7 @@ test('with only the MCP tools: beacons, a quote, the owner\'s approval from the 
   const asOwner = (...args: string[]) => node('src/bin/owner.ts', args, { VARDE_OWNER_HOME: ownerHome, VARDE_HOME: buyerHome })
   assert.deepEqual(
     (await seller.listTools()).tools.map((t) => t.name).sort(),
-    ['commit', 'contact', 'contacts', 'light', 'listen', 'message', 'messages', 'negotiate', 'quotes', 'withdraw'],
+    ['commit', 'contact', 'contacts', 'douse', 'light', 'listen', 'message', 'messages', 'move', 'negotiate', 'news', 'quotes', 'withdraw'],
   )
 
   const offer = await call(seller, 'light', { what: 'Selling a used iPad Air, 64 GB', intent: 'offer', where: 'Stavanger', ttlHours: 720 })
@@ -75,14 +75,26 @@ test('with only the MCP tools: beacons, a quote, the owner\'s approval from the 
   const sellerSide = await call(seller, 'contacts', { waitSeconds: 5 })
   assert.equal(sellerSide.contacts[0].session, contact.session)
 
-  // Negotiating gives each side a quote. Nothing is binding.
-  const [bought, sold] = await Promise.all([
-    call(buyer, 'negotiate', { session: contact.session, side: 'pay', currency: 'NOK', limit: 4000, target: 2800 }),
-    call(seller, 'negotiate', { session: contact.session, side: 'receive', currency: 'NOK', limit: 3200, target: 4400 }),
-  ])
-  assert.deepEqual([bought.outcome, sold.outcome], ['quoted', 'quoted'])
+  // The two agents negotiate by taking turns, each choosing its own prices. They are never asked to be there together.
+  const entered = await call(buyer, 'negotiate', { session: contact.session, side: 'pay', currency: 'NOK', limit: 4000 })
+  assert.deepEqual([entered.status, entered.yourTurn], ['waiting', false])
+  await assert.rejects(call(seller, 'negotiate', { session: contact.session }), /first time, give/)
+  assert.equal((await call(seller, 'negotiate', { session: contact.session, side: 'receive', currency: 'NOK', limit: 3200 })).yourTurn, true)
+  assert.equal((await call(seller, 'move', { session: contact.session, kind: 'offer', price: 3900 })).yourOffer, 3900)
+
+  // The buyer's agent wakes up and asks what has happened.
+  const news = await call(buyer, 'news')
+  assert.deepEqual(news.negotiations.map((n: any) => [n.yourTurn, n.theirOffer]), [[true, 3900]])
+  assert.equal((await call(buyer, 'news')).nothingNew, true)
+  assert.equal((await call(buyer, 'move', { session: contact.session, kind: 'counter', price: 4100 })).refused, 'outside your mandate')
+  await call(buyer, 'move', { session: contact.session, kind: 'counter', price: 3500 })
+  assert.equal((await call(seller, 'move', { session: contact.session, kind: 'accept' })).status, 'signing')
+
+  // The quote exists once both have looked in. Nothing is binding.
+  const bought = (await call(buyer, 'negotiate', { session: contact.session })).quote
+  const sold = (await call(seller, 'negotiate', { session: contact.session })).quote
+  assert.deepEqual([bought.state, sold.state, bought.price], ['quoted', 'quoted', 3500])
   assert.equal(bought.quoteId, sold.quoteId)
-  assert.ok(bought.price >= 3200 && bought.price <= 4000)
   assert.deepEqual([bought.needsOwnerApproval, sold.needsOwnerApproval], [true, false])
   assert.equal((await call(buyer, 'contacts')).receipts.length, 0)
 

@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type { Agent, Contact, HeldQuote } from '../agent.js'
+import type { RoomView } from '../room/client.js'
 import { type Beacon, beaconId, whatIntent, whatTags, whatText } from '../core/beacon.js'
 import { type Approval, type Quote, quoteId } from '../core/receipt.js'
 
@@ -106,32 +107,14 @@ export function registerVardeTools(server: McpServer, ctx: ToolContext): void {
         tags: z.array(z.string()).optional().describe('Optional keywords that help matching.'),
         ttlHours: z.number().positive().default(24).describe('Hours until the beacon burns out.'),
         ...scopeShape,
-        negotiate: z
-          .object({
-            side: z.enum(['pay', 'receive']).describe('`pay` if your owner pays, `receive` if your owner is paid.'),
-            currency: z.string().describe('Currency code, for example NOK.'),
-            limit: z.number().positive().describe('Hard limit your owner set: the most to pay, or the least to accept. Kept private; never put it in `what`.'),
-            target: z.number().positive().describe('The price to open at: lower than the limit when paying, higher when receiving.'),
-            maxDeals: z.number().int().positive().optional().describe('Stop after this many quotes or deals, for example 1 for a single item or 5 for five beta testers.'),
-          })
-          .optional()
-          .describe(
-            'Give this to negotiate unattended: when someone answers the beacon, you negotiate with them by yourself inside these limits, even while your owner and you are away. The result is a quote, which still needs a `commit`, or your owner\'s approval if they have set that up. Use it for anything that should keep working after this conversation ends. Only set limits your owner has actually given you.',
-          ),
       },
     },
-    ({ what, intent, tags, ttlHours, where, lat, lon, radiusKm, from, until, negotiate }) =>
+    ({ what, intent, tags, ttlHours, where, lat, lon, radiusKm, from, until }) =>
       run(async () => {
         const a = await ctx.agent()
         const geo = lat !== undefined && lon !== undefined ? { lat, lon, radiusKm } : undefined
-        const { id, beacon } = await a.light({ what, intent, tags, ttlMs: ttlHours * 60 * 60_000, scope: { where, geo, from, until }, standing: negotiate })
-        return {
-          id,
-          expires: beacon.expires,
-          relay: a.relayUrl,
-          you: a.did,
-          ...(negotiate ? { unattended: 'You will negotiate with whoever answers, inside the limits given. Look for the results with `quotes`.' } : {}),
-        }
+        const { id, beacon } = await a.light({ what, intent, tags, ttlMs: ttlHours * 60 * 60_000, scope: { where, geo, from, until } })
+        return { id, expires: beacon.expires, relay: a.relayUrl, you: a.did, note: 'Lit. Nobody is told when someone answers: look with `news` now and then.' }
       }),
   )
 
@@ -160,7 +143,7 @@ export function registerVardeTools(server: McpServer, ctx: ToolContext): void {
     'contact',
     {
       description:
-        'Answer a beacon found with `listen`. Runs the handshake over sealed mail: both sides prove control of their keys and agree which room to use. Returns a contact with a `session` id. Use it with `message` to ask about anything the beacon leaves out, and with `negotiate` to agree a price. Fails if the owner does not answer in time.',
+        'Answer a beacon found with `listen`. Runs the handshake over sealed mail: both sides prove control of their keys and agree which room to use. Returns a contact with a `session` id. Use it with `message` to ask about anything the beacon leaves out, and with `negotiate` and `move` to agree a price. Fails if the owner does not answer in time.',
       inputSchema: {
         beacon: z.string().describe('Id of the beacon to answer.'),
         as: z.string().optional().describe('Id of your own beacon that this is a match for, if you lit one.'),
@@ -233,37 +216,109 @@ export function registerVardeTools(server: McpServer, ctx: ToolContext): void {
       }),
   )
 
+  const describeView = (session: string, v: RoomView, a: Agent) => ({
+    session,
+    status: v.status,
+    ...(v.reason ? { reason: v.reason } : {}),
+    yourTurn: v.yourTurn,
+    turnsLeft: v.remaining,
+    currency: v.currency,
+    theirOffer: v.theirOffer,
+    theirTerms: v.theirTerms,
+    yourOffer: v.myOffer,
+    moves: v.history,
+    ...(v.refused ? { refused: v.refused } : {}),
+    deadline: v.deadline,
+    ...(v.quote && a.quotes.get(session) ? { quote: describeQuote(a, a.quotes.get(session)!, ctx) } : {}),
+    note:
+      v.status === 'waiting'
+        ? 'You are in. The other side has not come to the room yet; it may take hours. Look again later with `news`.'
+        : v.status === 'quoted'
+          ? 'Terms are agreed and stand as a quote, which commits nobody. Use `commit` to accept or `withdraw` to decline; if it needs your owner\'s approval, give them the approval link.'
+          : v.status === 'signing'
+            ? 'Terms are agreed. The quote is issued once the other side has looked in and signed it.'
+            : v.status === 'ended'
+              ? 'This negotiation is over without a deal.'
+              : v.yourTurn
+                ? 'It is your turn: make a `move`.'
+                : 'Waiting for the other side to move. It may take hours; look again later with `news`.',
+  })
+
   server.registerTool(
     'negotiate',
     {
       description:
-        'Negotiate a price with a contact in the neutral room both sides accepted. A separate negotiator is sent in carrying only the numbers given here; the room enforces `limit` in code, so it cannot be argued past. Both sides must call this within a few minutes of each other. Returns a QUOTE: agreed terms that stand until `validUntil` and commit nobody. You can collect quotes from several contacts and compare them. A quote becomes a deal only when both sides `commit`; if `needsOwnerApproval` is true, report the quote to your owner and wait for their decision instead of committing.',
+        'Enter or look in on a price negotiation with a contact, in the neutral room both sides accepted. The first time, say which side you are on, the currency and your owner\'s limit: the room holds you to that limit whatever happens, so it cannot be argued past, and it never shows it to the other side. This makes no move; use `move` for that. The two sides do not have to be there together: each makes a move when its agent is awake, so a negotiation can take hours. Call this again later, or `news`, to see whether the other side has moved.',
       inputSchema: {
         session: z.string().describe('Session id from `contact` or `contacts`.'),
-        side: z.enum(['pay', 'receive']).describe('`pay` if your owner pays, `receive` if your owner is paid.'),
-        currency: z.string().describe('Currency code, for example NOK.'),
-        limit: z.number().positive().describe('Hard limit your owner set: the most to pay, or the least to accept. Kept private.'),
-        target: z.number().positive().describe('The price to open at: lower than the limit when paying, higher when receiving.'),
-        maxTurns: z.number().int().positive().optional().describe('Your own cap on turns. The room has one as well.'),
-        waitSeconds: z.number().positive().max(600).default(MAX_WAIT_SECONDS).describe('How long to wait for the other side to join and for the outcome. Values above 50 may run past your own time limit for a tool call.'),
+        side: z.enum(['pay', 'receive']).optional().describe('First time only. `pay` if your owner pays, `receive` if your owner is paid.'),
+        currency: z.string().optional().describe('First time only. Currency code, for example NOK.'),
+        limit: z.number().positive().optional().describe('First time only. The hard limit your owner set: the most to pay, or the least to accept. It cannot be changed afterwards.'),
       },
     },
-    ({ session, side, currency, limit, target, maxTurns, waitSeconds }) =>
+    ({ session, side, currency, limit }) =>
       run(async () => {
         const a = await ctx.agent()
-        const outcome = await a.negotiate(session, { side, currency, limit, target, maxTurns, timeoutMs: waitSeconds * 1000 })
-        if (outcome.outcome === 'ended')
-          return { outcome: 'no-quote', reason: outcome.reason, moves: outcome.history.map(({ by, kind, price }) => ({ by, kind, price })) }
-        const held = a.quotes.get(session)!
-        const link = describeQuote(a, held).needsOwnerApproval ? ctx.approvalLink?.(held.quote, a) : undefined
+        const first = !a.negotiations.has(session)
+        if (first && (!side || !currency || limit === undefined)) throw new Error('the first time, give `side`, `currency` and `limit`')
+        return describeView(session, await a.visit(session, first ? { mandate: { side: side!, currency: currency!, limit: limit! } } : {}), a)
+      }),
+  )
+
+  server.registerTool(
+    'move',
+    {
+      description:
+        'Make one move in a negotiation you have entered with `negotiate`: an `offer` or `counter` with a price, `accept` the other side\'s standing offer, or `reject` to end without a deal. You choose every price yourself, so think about what your owner would want; the room only stops you at the limit. An accepted offer becomes a quote, which still commits nobody. Each move uses up one of a limited number of turns, including moves the room refuses.',
+      inputSchema: {
+        session: z.string().describe('Session id of the negotiation.'),
+        kind: z.enum(['offer', 'counter', 'accept', 'reject']),
+        price: z.number().positive().optional().describe('Required for `offer` and `counter`.'),
+        note: z.string().max(280).optional().describe('A short line to the other side. Never include your owner\'s limit.'),
+      },
+    },
+    ({ session, kind, price, note }) =>
+      run(async () => {
+        const a = await ctx.agent()
+        if ((kind === 'offer' || kind === 'counter') && price === undefined) throw new Error('an offer needs a price')
+        return describeView(session, await a.visit(session, { move: { kind, ...(price !== undefined ? { price } : {}), ...(note ? { note } : {}) } }), a)
+      }),
+  )
+
+  server.registerTool(
+    'news',
+    {
+      description:
+        'What has happened since you last asked: who answered your beacons, notes from contacts, negotiations where it is now your turn, and quotes that changed. Nothing here reaches you by itself, so call this when you start, and again every few minutes while your owner is waiting on something. Each thing is reported once.',
+      inputSchema: {},
+    },
+    () =>
+      run(async () => {
+        const a = await ctx.agent()
+        const n = await a.news()
+        const quiet = !n.contacts.length && !n.messages.length && !n.negotiations.length && !n.quotes.length
         return {
-          outcome: 'quoted',
-          note: link
-            ? 'Nobody is committed yet. Give your owner the approval link; once they have approved, `commit` will go through.'
-            : 'Nobody is committed yet. Use `commit` to accept or `withdraw` to decline.',
-          ...describeQuote(a, held),
-          ...(link ? { approvalLink: link } : {}),
+          ...(quiet ? { nothingNew: true } : {}),
+          note: UNTRUSTED_NOTES,
+          newContacts: n.contacts.map((x) => describeContact(x, ctx)),
+          newNotes: n.messages,
+          negotiations: n.negotiations.map(({ session, ...v }) => describeView(session, v, a)),
+          quotes: n.quotes.map((q) => describeQuote(a, q, ctx)),
         }
+      }),
+  )
+
+  server.registerTool(
+    'douse',
+    {
+      description:
+        'Put out one of your beacons before it expires, for example when the thing is sold or no longer wanted. Others stop finding it. Contacts and quotes already made stay as they are.',
+      inputSchema: { beacon: z.string().describe('Id of your beacon.') },
+    },
+    ({ beacon }) =>
+      run(async () => {
+        await (await ctx.agent()).douse(beacon)
+        return { doused: beacon }
       }),
   )
 
@@ -301,6 +356,8 @@ export function registerVardeTools(server: McpServer, ctx: ToolContext): void {
     ({ session }) =>
       run(async () => {
         const a = await ctx.agent()
+        // The quote may have been issued while this agent was away.
+        if (!a.quotes.has(session) && a.negotiations.has(session)) await a.visit(session).catch(() => {})
         const held = a.quotes.get(session)
         if (!held) throw new Error('no quote for that session')
         // The owner signs with a key this process never sees; only the finished approval is fetched here.

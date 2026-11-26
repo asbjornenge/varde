@@ -173,3 +173,38 @@ export function checkBeacon(b: Beacon, now = Date.now()): string | null {
   if (isExpired(b, now)) return 'expired'
   return null
 }
+
+/** A lighter's word that one of its beacons is out, before the time the beacon itself gave. */
+export interface Retraction {
+  v: 1
+  kind: 'varde.retraction'
+  /** Id of the beacon. */
+  beacon: string
+  who: string
+  /** When the beacon would have expired. A relay may forget the retraction after this. */
+  expires: string
+  at: string
+  sig: string
+}
+
+const RETRACTION_CONTEXT = 'retraction'
+
+export function retractBeacon(id: Identity, beacon: Beacon, now = Date.now()): Retraction {
+  if (beacon.who !== id.did) throw new Error('only the key that lit a beacon can put it out')
+  return signObject(id, RETRACTION_CONTEXT, {
+    v: 1 as const,
+    kind: 'varde.retraction' as const,
+    beacon: beaconId(beacon),
+    who: id.did,
+    expires: beacon.expires,
+    at: new Date(now).toISOString(),
+  })
+}
+
+/** Returns null if the retraction is well formed and signed by the key it names. */
+export function checkRetraction(r: Retraction): string | null {
+  if (!r || r.v !== 1 || r.kind !== 'varde.retraction') return 'not a retraction'
+  if (typeof r.beacon !== 'string' || r.beacon.length > 64 || !isDid(r.who) || !isIso(r.expires) || !isIso(r.at)) return 'malformed'
+  if (!verifyObject(r.who, RETRACTION_CONTEXT, r)) return 'bad signature'
+  return null
+}

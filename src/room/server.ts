@@ -17,13 +17,18 @@ import {
   signQuote,
   verifyQuoteSig,
 } from '../core/receipt.js'
-import { type Mandate, type Move, Negotiation, approverFor, checkMandate } from './negotiation.js'
+import { canonicalize } from '../core/canonical.js'
+import { type Mandate, type Move, type MoveEvent, Negotiation, type NegotiationSnapshot, type Terms, approverFor, checkMandate } from './negotiation.js'
 
 /**
  * A room is a neutral service two agents enter to negotiate under rules
  * neither controls. It verifies both keys against the beacons that brought
  * them, enforces each mandate in code, caps turns and bytes, and carries only
  * structured moves.
+ *
+ * The parties need not be present together. Each looks in, sees where things
+ * stand, makes a move if it is its turn, and leaves; the room keeps the
+ * session until it is settled or its time runs out.
  *
  * What the negotiators agree becomes a quote, which the room keeps. The deal
  * is made, and the receipt issued, only when both sides' approvers have
@@ -38,10 +43,11 @@ export interface RoomOptions {
   maxTurns?: number
   /** Hard cap on bytes each party may send in a session. Default 16 KiB. */
   maxBytesPerParty?: number
-  /** How long the first party waits for the second. Default 5 minutes. */
-  joinTimeoutMs?: number
-  /** How long a session may sit idle before the room ends it. Default 2 minutes. */
-  idleTimeoutMs?: number
+  /**
+   * How long a session is kept while its parties come and go. A negotiation
+   * that has not reached a quote by then ends. Default 7 days.
+   */
+  sessionTtlMs?: number
   /** How long a quote stands when neither mandate says. Default 24 hours. */
   defaultHoldMs?: number
   /** The longest a quote may stand, whatever the mandates say. Default 7 days. */
@@ -88,8 +94,8 @@ export interface RoomStatus {
   receipt?: Receipt
 }
 
-interface Slot {
-  ws: WebSocket
+/** One side of a session, as the room remembers it between visits. */
+interface Party {
   did: string
   peer: string
   beaconId?: string
@@ -98,13 +104,38 @@ interface Slot {
   quoteSig?: string
 }
 
+/** A negotiation the room is keeping. The parties come and go; this stays. */
 interface Session {
   id: string
-  slots: Map<string, Slot>
-  negotiation?: Negotiation
+  createdAt: number
+  parties: Record<string, Party>
+  status: 'waiting' | 'open' | 'signing' | 'ended'
+  reason?: string
+  negotiation?: NegotiationSnapshot
   quote?: QuoteBody
-  timer?: NodeJS.Timeout
-  done: boolean
+}
+
+/** What a party is told about its session whenever it looks in. Never includes the other side's mandate. */
+export interface RoomState {
+  t: 'state'
+  session: string
+  room: string
+  /** `waiting`: the other side has not come yet. `signing`: terms are agreed and the quote awaits signatures. */
+  status: Session['status'] | 'quoted'
+  reason?: string
+  currency?: string
+  maxTurns?: number
+  remaining?: number
+  yourTurn: boolean
+  /** The party expected to open when both are present. */
+  first?: string
+  history: (Omit<MoveEvent, 'note'> & { untrustedNote?: string })[]
+  offer?: { from: string; price: number; terms?: Terms }
+  /** A quote this party is asked to sign. */
+  sign?: QuoteBody
+  quote?: Quote
+  /** The session ends by itself at this time if nothing has been agreed. */
+  deadline: string
 }
 
 interface Deal {
@@ -121,23 +152,30 @@ export async function startRoom(opts: RoomOptions): Promise<Room> {
   const now = opts.now ?? Date.now
   const roomMaxTurns = opts.maxTurns ?? 12
   const maxBytes = opts.maxBytesPerParty ?? 16 * 1024
-  const joinTimeoutMs = opts.joinTimeoutMs ?? 5 * 60_000
-  const idleTimeoutMs = opts.idleTimeoutMs ?? 2 * 60_000
+  const sessionTtlMs = opts.sessionTtlMs ?? 7 * DAY
   const defaultHoldMs = opts.defaultHoldMs ?? DAY
   const maxHoldMs = opts.maxHoldMs ?? 7 * DAY
   const sessions = new Map<string, Session>()
+  const live = new Map<string, Negotiation>()
+  /** Who is connected right now, per session and party. */
+  const present = new Map<string, Map<string, Set<WebSocket>>>()
   const deals = new Map<string, Deal>()
   const watchers = new Map<string, Set<WebSocket>>()
 
   if (opts.dataFile && existsSync(opts.dataFile)) {
-    const saved = JSON.parse(readFileSync(opts.dataFile, 'utf8')) as { deals?: Deal[] }
+    const saved = JSON.parse(readFileSync(opts.dataFile, 'utf8')) as { deals?: Deal[]; sessions?: Session[] }
     for (const d of saved.deals ?? []) if (checkQuote(d.quote) === null && d.quote.room === opts.identity.did) deals.set(d.quote.session, d)
+    for (const s of saved.sessions ?? []) sessions.set(s.id, s)
   }
   function persist() {
     if (!opts.dataFile) return
     mkdirSync(dirname(opts.dataFile), { recursive: true })
+    for (const [id, n] of live) {
+      const s = sessions.get(id)
+      if (s) s.negotiation = n.snapshot()
+    }
     const tmp = `${opts.dataFile}.tmp`
-    writeFileSync(tmp, JSON.stringify({ deals: [...deals.values()] }), { mode: 0o600 })
+    writeFileSync(tmp, JSON.stringify({ deals: [...deals.values()], sessions: [...sessions.values()] }), { mode: 0o600 })
     renameSync(tmp, opts.dataFile)
   }
 
@@ -150,29 +188,64 @@ export async function startRoom(opts: RoomOptions): Promise<Room> {
   const send = (ws: WebSocket, msg: object) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg))
   }
+  const connections = (s: Session, did?: string): WebSocket[] =>
+    [...(present.get(s.id) ?? new Map<string, Set<WebSocket>>())].flatMap(([d, set]) => (did === undefined || d === did ? [...set] : []))
   const broadcast = (s: Session, msg: object) => {
-    for (const slot of s.slots.values()) send(slot.ws, msg)
+    for (const ws of connections(s)) send(ws, msg)
   }
 
-  // ---- Live negotiation -------------------------------------------------
+  // ---- Negotiation ------------------------------------------------------
 
-  function finish(s: Session, msg: object | null, closeSockets = true) {
-    if (s.done) return
-    s.done = true
-    clearTimeout(s.timer)
-    if (msg) broadcast(s, msg)
-    sessions.delete(s.id)
-    if (closeSockets) for (const slot of s.slots.values()) slot.ws.close()
-  }
-  const end = (s: Session, reason: string) => finish(s, { t: 'end', session: s.id, reason })
-
-  function arm(s: Session, ms: number, reason: string) {
-    clearTimeout(s.timer)
-    s.timer = setTimeout(() => end(s, reason), ms)
-    s.timer.unref()
+  /** The running rules for a session, brought back from what was saved if need be. */
+  function rules(s: Session): Negotiation | undefined {
+    let n = live.get(s.id)
+    if (!n && s.negotiation) {
+      n = Negotiation.restore(s.negotiation)
+      live.set(s.id, n)
+    }
+    return n
   }
 
-  function join(ws: WebSocket, challenge: string, req: JoinRequest): Session | string {
+  const deadlineOf = (s: Session) => s.createdAt + sessionTtlMs
+
+  function view(s: Session, did: string): RoomState {
+    const n = rules(s)
+    const party = s.parties[did]
+    return {
+      t: 'state',
+      session: s.id,
+      room: opts.identity.did,
+      status: s.status,
+      ...(s.reason ? { reason: s.reason } : {}),
+      ...(n ? { currency: n.currency, maxTurns: n.maxTurns, remaining: n.remaining, first: n.first } : {}),
+      yourTurn: !!n && s.status === 'open' && n.mayMove(did),
+      history: (n?.history ?? []).map(({ note, ...e }) => ({ ...e, ...(note !== undefined ? { untrustedNote: note } : {}) })),
+      ...(n?.offer && s.status === 'open' ? { offer: n.offer } : {}),
+      ...(s.quote && party && !party.quoteSig ? { sign: s.quote } : {}),
+      deadline: new Date(deadlineOf(s)).toISOString(),
+    }
+  }
+
+  /** Tells everyone who is connected where things stand, each from their own side. */
+  function tell(s: Session) {
+    for (const did of Object.keys(s.parties)) for (const ws of connections(s, did)) send(ws, view(s, did))
+  }
+
+  function end(s: Session, reason: string) {
+    if (s.status === 'ended') return
+    s.status = 'ended'
+    s.reason = reason
+    persist()
+    broadcast(s, { t: 'end', session: s.id, reason })
+    tell(s)
+  }
+
+  /** Ends a session whose time has run out. Sessions wait for their parties, but not for ever. */
+  function expire(s: Session) {
+    if (s.status !== 'ended' && deadlineOf(s) <= now()) end(s, 'expired')
+  }
+
+  function join(ws: WebSocket, challenge: string, req: JoinRequest): { session: Session; did: string } | { deal: Deal; did: string } | string {
     if (!req || typeof req.session !== 'string' || req.session.length < 16 || req.session.length > 128)
       return 'join needs a session id'
     if (!isDid(req.did) || !isDid(req.peer) || req.did === req.peer) return 'join needs your DID and a different peer DID'
@@ -188,92 +261,110 @@ export async function startRoom(opts: RoomOptions): Promise<Room> {
       if (req.beacon.who !== req.did) return 'that beacon was lit by another key'
       bId = beaconId(req.beacon)
     }
-    if (deals.has(req.session)) return 'this session already has a quote'
+
+    // A session that already produced a quote is over: its parties are shown the quote.
+    const d = deal(req.session)
+    if (d) return d.quote.parties.some((p) => p.did === req.did) ? { deal: d, did: req.did } : 'session is full'
 
     let s = sessions.get(req.session)
+    if (s) expire(s)
     if (!s) {
-      s = { id: req.session, slots: new Map(), done: false }
+      s = { id: req.session, createdAt: now(), parties: {}, status: 'waiting' }
       sessions.set(s.id, s)
-      arm(s, joinTimeoutMs, 'peer-never-joined')
-    } else {
-      if (s.slots.size >= 2 || s.slots.has(req.did)) return 'session is full'
-      const [first] = s.slots.values()
-      if (first.peer !== req.did || first.did !== req.peer) return 'parties do not name each other'
     }
-    s.slots.set(req.did, { ws, did: req.did, peer: req.peer, beaconId: bId, mandate: req.mandate, bytes: 0 })
+    const known = s.parties[req.did]
+    if (known) {
+      // Coming back. What was authorised at the start stands: a mandate cannot be loosened mid-way.
+      if (known.peer !== req.peer || canonicalize(known.mandate) !== canonicalize(req.mandate)) return 'your mandate for this session is already set'
+      if (bId && !known.beaconId) known.beaconId = bId
+    } else {
+      const others = Object.values(s.parties)
+      if (others.length >= 2) return 'session is full'
+      if (others.length === 1 && (others[0].peer !== req.did || others[0].did !== req.peer)) return 'parties do not name each other'
+      if (s.status === 'ended') return `session is over: ${s.reason}`
+      s.parties[req.did] = { did: req.did, peer: req.peer, beaconId: bId, mandate: req.mandate, bytes: 0 }
+    }
+    const here = present.get(s.id) ?? new Map<string, Set<WebSocket>>()
+    here.set(req.did, (here.get(req.did) ?? new Set()).add(ws))
+    present.set(s.id, here)
     send(ws, { t: 'joined', session: s.id, room: opts.identity.did })
-    if (s.slots.size === 2) start(s)
-    return s
+    if (!known && Object.keys(s.parties).length === 2) start(s)
+    persist()
+    return { session: s, did: req.did }
   }
 
   function start(s: Session) {
-    const [a, b] = [...s.slots.values()]
+    const [a, b] = Object.values(s.parties)
     if (!a.beaconId && !b.beaconId) return end(s, 'no-beacon')
+    let n: Negotiation
     try {
-      s.negotiation = new Negotiation(a, b, roomMaxTurns)
+      n = new Negotiation(a, b, roomMaxTurns)
     } catch {
       // Says only that the mandates do not fit together, never what they hold.
       return end(s, 'incompatible-mandates')
     }
-    const n = s.negotiation
+    live.set(s.id, n)
+    s.status = 'open'
     broadcast(s, { t: 'start', session: s.id, room: opts.identity.did, first: n.first, maxTurns: n.maxTurns, currency: n.currency })
-    arm(s, idleTimeoutMs, 'idle')
   }
 
-  function move(s: Session, slot: Slot, m: Move) {
-    const n = s.negotiation
-    if (!n || s.quote) return send(slot.ws, { t: 'refused', reason: 'not accepting moves now' })
-    const result = n.move(slot.did, m)
+  function move(s: Session, party: Party, ws: WebSocket, m: Move) {
+    const n = rules(s)
+    if (!n || s.status !== 'open') return send(ws, { t: 'refused', reason: s.status === 'waiting' ? 'the other side has not joined yet' : 'not accepting moves now' })
+    const result = n.move(party.did, m)
     if (!result.ok) {
-      send(slot.ws, { t: 'refused', reason: result.reason, remaining: result.remaining })
+      send(ws, { t: 'refused', reason: result.reason, remaining: result.remaining })
       if (result.over) end(s, n.endReason ?? 'turn-limit')
+      else persist()
       return
     }
-    arm(s, idleTimeoutMs, 'idle')
     const { note, ...event } = result.event
     // Free text is data, never instruction: it travels in its own labelled field.
     broadcast(s, { t: 'move', session: s.id, ...event, ...(note !== undefined ? { untrustedNote: note } : {}) })
     if (n.status === 'ended') return end(s, n.endReason!)
     if (n.status === 'agreed') {
       const price = n.agreedPrice!
-      const party = (x: Slot) => ({
+      const side = (x: Party) => ({
         did: x.did,
         side: x.mandate.side,
         ...(x.beaconId ? { beacon: x.beaconId } : {}),
         approver: approverFor(x.mandate, x.did, price),
       })
-      const [a, b] = [...s.slots.values()]
+      const [a, b] = Object.values(s.parties)
       const hold = Math.min(maxHoldMs, ...[a, b].map((x) => (x.mandate.holdSeconds !== undefined ? x.mandate.holdSeconds * 1000 : defaultHoldMs)))
       s.quote = {
         v: 1,
         kind: 'varde.quote',
         room: opts.identity.did,
         session: s.id,
-        parties: [party(a), party(b)],
+        parties: [side(a), side(b)],
         terms: { price, currency: n.currency, ...(n.agreedTerms ? { conditions: n.agreedTerms } : {}) },
         turns: n.turns,
         at: new Date(now()).toISOString(),
         validUntil: new Date(now() + hold).toISOString(),
       }
+      s.status = 'signing'
       broadcast(s, { t: 'sign', session: s.id, quote: s.quote })
-      arm(s, idleTimeoutMs, 'quote-not-signed')
     }
+    persist()
   }
 
-  function signed(s: Session, slot: Slot, sig: unknown) {
-    if (!s.quote || typeof sig !== 'string' || !verifyQuoteSig(slot.did, s.quote, sig))
-      return send(slot.ws, { t: 'refused', reason: 'bad quote signature' })
-    slot.quoteSig = sig
-    const slots = [...s.slots.values()]
-    if (!slots.every((x) => x.quoteSig)) return
+  function signed(s: Session, party: Party, ws: WebSocket, sig: unknown) {
+    if (!s.quote || typeof sig !== 'string' || !verifyQuoteSig(party.did, s.quote, sig)) return send(ws, { t: 'refused', reason: 'bad quote signature' })
+    party.quoteSig = sig
+    const all = Object.values(s.parties)
+    if (!all.every((x) => x.quoteSig)) return persist()
     const sigs: Record<string, string> = { [opts.identity.did]: signQuote(opts.identity, s.quote) }
-    for (const x of slots) sigs[x.did] = x.quoteSig!
+    for (const x of all) sigs[x.did] = x.quoteSig!
     const quote: Quote = { ...s.quote, sigs }
     deals.set(s.id, { state: 'quoted', quote, approvals: {} })
+    // The negotiation is over. Whoever is still connected now watches the quote.
+    watchers.set(s.id, new Set(connections(s)))
+    broadcast(s, { t: 'quote', session: s.id, quote })
+    sessions.delete(s.id)
+    live.delete(s.id)
+    present.delete(s.id)
     persist()
-    // The negotiation is over. Both connections stay open and now watch the quote.
-    watchers.set(s.id, new Set(slots.map((x) => x.ws)))
-    finish(s, { t: 'quote', session: s.id, quote }, false)
   }
 
   // ---- Quotes ------------------------------------------------------------
@@ -351,17 +442,25 @@ export async function startRoom(opts: RoomOptions): Promise<Room> {
       // Dead quotes are kept a week for anyone still asking, then dropped.
       if ((d.state === 'lapsed' || d.state === 'withdrawn') && Date.parse(d.quote.validUntil) + 7 * DAY < now()) deals.delete(session)
     }
+    for (const [id, s] of sessions) {
+      expire(s)
+      // A session that ended is remembered for a week, so a party that returns learns why.
+      if (s.status === 'ended' && deadlineOf(s) + 7 * DAY < now()) {
+        sessions.delete(id)
+        live.delete(id)
+      }
+    }
   }, 1000)
   sweep.unref()
 
   wss.on('connection', (ws) => {
     const challenge = nonce()
-    let session: Session | undefined
-    let slot: Slot | undefined
+    let at: { session: Session; did: string } | undefined
     send(ws, { t: 'challenge', nonce: challenge, room: opts.identity.did })
     ws.on('error', () => ws.terminate())
     ws.on('close', () => {
-      if (session && !session.done) end(session, 'abandoned')
+      // Leaving ends nothing. The session waits for its parties to come back.
+      if (at) present.get(at.session.id)?.get(at.did)?.delete(ws)
       for (const set of watchers.values()) set.delete(ws)
     })
     ws.on('message', (data) => {
@@ -384,23 +483,41 @@ export async function startRoom(opts: RoomOptions): Promise<Room> {
         return send(ws, statusOf(m.session as string, d))
       }
 
-      if (!session || !slot) {
+      if (!at) {
         if (m.t !== 'join') return send(ws, { t: 'refused', reason: 'join first' })
         const result = join(ws, challenge, m as unknown as JoinRequest)
         if (typeof result === 'string') {
           send(ws, { t: 'refused', reason: result })
           return ws.close()
         }
-        session = result
-        slot = session.slots.get((m as unknown as JoinRequest).did)
+        if ('deal' in result) {
+          // The negotiation already produced a quote. Show it, and keep this party posted on it.
+          const { deal: d, did } = result
+          watch(ws, d.quote.session)
+          send(ws, { t: 'joined', session: d.quote.session, room: opts.identity.did })
+          const state: RoomState = { t: 'state', session: d.quote.session, room: opts.identity.did, status: 'quoted', yourTurn: false, history: [], quote: d.quote, deadline: d.quote.validUntil }
+          void did
+          send(ws, state)
+          return send(ws, { t: 'quote', session: d.quote.session, quote: d.quote })
+        }
+        at = result
+        const s = at.session
+        send(ws, view(s, at.did))
+        // What this party missed while away and still has to act on.
+        if (s.status === 'ended') send(ws, { t: 'end', session: s.id, reason: s.reason })
+        else if (s.quote && !s.parties[at.did].quoteSig) send(ws, { t: 'sign', session: s.id, quote: s.quote })
         return
       }
-      if (session.done) return
-      slot.bytes += Buffer.byteLength(raw)
-      if (slot.bytes > maxBytes) return end(session, 'byte-limit')
-      if (m.t === 'move') return move(session, slot, m.move as Move)
-      if (m.t === 'signed') return signed(session, slot, m.sig)
-      send(ws, { t: 'refused', reason: 'unknown message type' })
+      const s = at.session
+      const party = s.parties[at.did]
+      if (s.status === 'ended') return send(ws, { t: 'end', session: s.id, reason: s.reason })
+      party.bytes += Buffer.byteLength(raw)
+      if (party.bytes > maxBytes) return end(s, 'byte-limit')
+      if (m.t === 'move') move(s, party, ws, m.move as Move)
+      else if (m.t === 'signed') signed(s, party, ws, m.sig)
+      else return send(ws, { t: 'refused', reason: 'unknown message type' })
+      // Everyone connected sees where things stand after each step, from their own side.
+      if (sessions.has(s.id)) tell(s)
     })
   })
 
@@ -409,11 +526,10 @@ export async function startRoom(opts: RoomOptions): Promise<Room> {
     port,
     url: `ws://${opts.host ?? '127.0.0.1'}:${port}`,
     did: opts.identity.did,
-    stats: () => ({ sessions: sessions.size, quotes: [...deals.values()].filter((d) => d.state === 'quoted').length }),
+    stats: () => ({ sessions: [...sessions.values()].filter((s) => s.status !== 'ended').length, quotes: [...deals.values()].filter((d) => d.state === 'quoted').length }),
     close: () =>
       new Promise<void>((resolve) => {
         clearInterval(sweep)
-        for (const s of sessions.values()) clearTimeout(s.timer)
         for (const c of wss.clients) c.terminate()
         wss.close(() => resolve())
       }),

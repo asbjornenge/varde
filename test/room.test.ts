@@ -48,10 +48,11 @@ test('rules: a move outside the mandate is refused and still costs a turn', () =
     { did: 'seller', mandate: { side: 'receive', currency: 'NOK', limit: 400 } },
     6,
   )
-  assert.equal(n.first, 'seller')
-  assert.deepEqual(n.move('buyer', { kind: 'offer', price: 300 }), { ok: false, reason: 'not your turn', remaining: 5, over: false })
+  assert.equal(n.first, 'seller') // by convention, when both are present
   assert.equal(n.move('seller', { kind: 'offer', price: 350 }).ok, false) // below the seller's own floor
   assert.equal(n.move('seller', { kind: 'offer', price: 900 }).ok, true)
+  // Once an offer is made, the turns alternate.
+  assert.deepEqual(n.move('seller', { kind: 'offer', price: 800 }), { ok: false, reason: 'not your turn', remaining: 3, over: false })
   // The buyer cannot accept 900, nor offer 900, however it was persuaded.
   assert.deepEqual(n.move('buyer', { kind: 'accept' }), { ok: false, reason: 'outside your mandate', remaining: 2, over: false })
   assert.equal(n.move('buyer', { kind: 'counter', price: 900 }).ok, false)
@@ -59,6 +60,28 @@ test('rules: a move outside the mandate is refused and still costs a turn', () =
   assert.equal(last.ok, true)
   assert.equal(n.status, 'ended')
   assert.equal(n.endReason, 'turn-limit')
+})
+
+test('rules: either side may open, and a negotiation can be put away and taken up again', () => {
+  const parties = [
+    { did: 'buyer', mandate: { side: 'pay' as const, currency: 'NOK', limit: 500 } },
+    { did: 'seller', mandate: { side: 'receive' as const, currency: 'NOK', limit: 400 } },
+  ] as const
+  const n = new Negotiation(parties[0], parties[1], 8)
+  assert.deepEqual([n.mayMove('buyer'), n.mayMove('seller'), n.mayMove('stranger')], [true, true, false])
+  // The buyer opens, though the seller is the one expected to when both are there.
+  assert.equal(n.move('buyer', { kind: 'offer', price: 300, note: 'cash on pickup' }).ok, true)
+  assert.deepEqual([n.mayMove('buyer'), n.mayMove('seller')], [false, true])
+
+  // What a room writes to disk is enough to carry on, mandates and all.
+  const later = Negotiation.restore(JSON.parse(JSON.stringify(n.snapshot())))
+  assert.deepEqual(later.offer, { from: 'buyer', price: 300 })
+  assert.equal(later.history[0].note, 'cash on pickup')
+  assert.equal(later.move('buyer', { kind: 'offer', price: 320 }).ok, false) // still not the buyer's turn
+  assert.equal(later.move('seller', { kind: 'counter', price: 390 }).ok, false) // still below the seller's floor
+  assert.equal(later.move('seller', { kind: 'counter', price: 450 }).ok, true)
+  assert.equal(later.move('buyer', { kind: 'accept' }).ok, true)
+  assert.deepEqual([later.status, later.agreedPrice, later.turns], ['agreed', 450, 5])
 })
 
 test('rules: mandates must be on opposite sides and in one currency', () => {

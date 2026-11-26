@@ -34,7 +34,9 @@ test('whatever two parties send, no deal is ever struck outside either mandate o
     while (n.status === 'open' && attempts < 200) {
       attempts++
       // Mostly the right party moves; sometimes the wrong one, or a stranger.
-      const who = r() < 0.8 ? (n as any).toMove : r() < 0.9 ? ((n as any).toMove === 'P' ? 'R' : 'P') : 'X'
+      // Before the first offer either party may move.
+      const turn: string = (n as any).toMove ?? (r() < 0.5 ? 'P' : 'R')
+      const who = r() < 0.8 ? turn : r() < 0.9 ? (turn === 'P' ? 'R' : 'P') : 'X'
       const k = r()
       const kind = k < 0.4 ? 'offer' : k < 0.65 ? 'counter' : k < 0.9 ? 'accept' : k < 0.95 ? 'reject' : 'steal'
       const price = r() < 0.9 ? int(1, 70) * 100 : junk[int(0, junk.length - 1)]

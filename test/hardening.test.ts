@@ -177,19 +177,20 @@ test('the byte limit ends a session in which one side floods the other with text
   await room.close()
 })
 
-test('a session whose party goes silent is ended, and a party left waiting alone is released', async () => {
-  const room = await startRoom({ identity: createIdentity(), idleTimeoutMs: 120, joinTimeoutMs: 120 })
+test('a session waits for its parties, but not for ever', async () => {
+  const room = await startRoom({ identity: createIdentity(), sessionTtlMs: 300 })
+  // One party never moves. Nothing ends because someone is slow or away; the session ends when its time is up.
   const silent: Negotiator = () => new Promise(() => {})
   const [b, s] = await pairIn(room.url, silent, () => ({ kind: 'offer', price: 3900 }))
-  assert.deepEqual([(b as any).reason, (s as any).reason], ['idle', 'idle'])
+  assert.deepEqual([(b as any).reason, (s as any).reason], ['expired', 'expired'])
 
+  // A party that waits alone is told the same when the time runs out.
   const alone = createIdentity()
   const outcome = await enterRoom({
     roomUrl: room.url, identity: alone, session: nonce(24), peer: createIdentity().did, beacon: beaconFor(alone),
     mandate: { side: 'pay', currency: 'NOK', limit: 1 }, negotiator: silent,
   })
-  assert.equal((outcome as any).reason, 'peer-never-joined')
-  assert.equal(room.stats().sessions, 0)
+  assert.equal((outcome as any).reason, 'expired')
   await room.close()
 })
 

@@ -16,7 +16,7 @@ import {
 } from '../core/receipt.js'
 import type { Negotiator, NegotiatorView } from '../negotiator.js'
 import { type Mandate, type Move, type Terms, approverFor, withinMandate } from './negotiation.js'
-import { type JoinRequest, ROOM_JOIN_CONTEXT, type RoomStatus } from './server.js'
+import { type JoinRequest, ROOM_JOIN_CONTEXT, type RoomState, type RoomStatus } from './server.js'
 
 export interface EnterRoomOptions {
   roomUrl: string
@@ -183,7 +183,10 @@ export function enterRoom(opts: EnterRoomOptions): Promise<RoomOutcome> {
         }
         case 'quote': {
           const q = m.quote as Quote
-          if (checkQuote(q) !== null || canonicalize(quoteBody(q)) !== canonicalize(signedBody)) return ended('quote-invalid')
+          // Either the quote we have just signed, or one from an earlier visit. The latter carries
+          // our own signature, which checkQuote verifies, so it is one we agreed to then.
+          const ours = signedBody ? canonicalize(quoteBody(q)) === canonicalize(signedBody) : q.session === opts.session && q.parties.some((p) => p.did === me)
+          if (checkQuote(q) !== null || !ours) return ended('quote-invalid')
           quote = q
           const selfApproves = q.parties.find((p) => p.did === me)?.approver === me
           if (!opts.commit || !selfApproves) return settle(() => resolve({ outcome: 'quoted', quote: q, history, refusals }))
@@ -202,6 +205,159 @@ export function enterRoom(opts: EnterRoomOptions): Promise<RoomOutcome> {
         }
         case 'end':
           return ended(String(m.reason))
+      }
+    })
+  })
+}
+
+export interface RoomVisitOptions {
+  roomUrl: string
+  identity: Identity
+  session: string
+  peer: string
+  beacon?: Beacon
+  /** The same mandate on every visit. The room refuses a visit that tries to change it. */
+  mandate: Mandate
+  /** A move to make on this visit, if any. */
+  move?: Move
+  timeoutMs?: number
+}
+
+/** What a party sees when it looks in on its negotiation. */
+export interface RoomView {
+  /** `waiting`: the other side has not come yet. `open`: negotiating. `signing`: agreed, the quote awaits a signature. */
+  status: RoomState['status']
+  /** Why the session ended, when it has. */
+  reason?: string
+  yourTurn: boolean
+  remaining?: number
+  maxTurns?: number
+  currency?: string
+  history: NegotiatorView['history']
+  /** The other side's offer on the table, if any. */
+  theirOffer?: number
+  theirTerms?: Terms
+  /** Your own offer on the table, if it is the standing one. */
+  myOffer?: number
+  /** Set when the room refused the move made on this visit. */
+  refused?: string
+  quote?: Quote
+  deadline?: string
+}
+
+/**
+ * One visit to a room: look in, optionally make a move, sign the quote if
+ * terms were agreed, and leave. The room keeps the session, so the parties do
+ * not have to be present together. This is how an agent that is only awake
+ * now and then negotiates.
+ */
+export function visitRoom(opts: RoomVisitOptions): Promise<RoomView> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(opts.roomUrl, { maxPayload: 64 * 1024 })
+    const me = opts.identity.did
+    let roomDid: string | undefined
+    let state: RoomState | undefined
+    let refused: string | undefined
+    let quote: Quote | undefined
+    let sent = false
+    let signedBody: QuoteBody | undefined
+    let done = false
+
+    const finish = (fn: () => void) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      clearTimeout(settle)
+      fn()
+      ws.close()
+    }
+    const fail = (message: string) => finish(() => reject(new Error(message)))
+    const timer = setTimeout(() => fail('the room did not answer'), opts.timeoutMs ?? 15_000)
+    let settle: NodeJS.Timeout | undefined
+
+    const toView = (): RoomView => {
+      const s = state!
+      const offer = s.offer
+      return {
+        status: quote ? 'quoted' : s.status,
+        ...(s.reason ? { reason: s.reason } : {}),
+        yourTurn: s.yourTurn,
+        remaining: s.remaining,
+        maxTurns: s.maxTurns,
+        currency: s.currency,
+        history: s.history.map((h) => ({ by: h.from === me ? ('me' as const) : ('them' as const), kind: h.kind, price: h.price, ...(h.terms ? { terms: h.terms } : {}), ...(h.untrustedNote !== undefined ? { untrustedNote: h.untrustedNote } : {}) })),
+        ...(offer && offer.from !== me ? { theirOffer: offer.price, theirTerms: offer.terms } : {}),
+        ...(offer && offer.from === me ? { myOffer: offer.price } : {}),
+        ...(refused ? { refused } : {}),
+        ...(quote ? { quote } : {}),
+        deadline: s.deadline,
+      }
+    }
+    // The room answers each step with the new state. Once it has gone quiet, the visit is over.
+    const quiet = () => {
+      clearTimeout(settle)
+      settle = setTimeout(() => finish(() => resolve(toView())), 150)
+    }
+
+    /** Signs the quote if it records exactly what was agreed and nothing this party's mandate forbids. */
+    function sign(q: QuoteBody) {
+      const accepted = [...(state?.history ?? [])].reverse().find((h) => h.kind === 'accept')
+      const self = q.parties?.find((p) => p.did === me)
+      const fine =
+        q.kind === 'varde.quote' &&
+        q.room === roomDid &&
+        q.session === opts.session &&
+        self?.side === opts.mandate.side &&
+        q.parties.some((p) => p.did === opts.peer) &&
+        !!accepted &&
+        q.terms?.price === accepted.price &&
+        canonicalize(q.terms.conditions ?? {}) === canonicalize(accepted.terms ?? {}) &&
+        q.terms?.currency?.toUpperCase() === opts.mandate.currency.toUpperCase() &&
+        withinMandate(opts.mandate, q.terms.price, q.terms.conditions) &&
+        self.approver === approverFor(opts.mandate, me, q.terms.price) &&
+        Date.parse(q.validUntil) > Date.now()
+      if (!fine) return fail('the room offered a quote that does not match what was agreed')
+      signedBody = q
+      ws.send(JSON.stringify({ t: 'signed', sig: signQuote(opts.identity, q) }))
+    }
+
+    ws.on('error', (e) => finish(() => reject(e)))
+    ws.on('close', () => (state ? finish(() => resolve(toView())) : fail('the room closed the connection')))
+    ws.on('message', (data) => {
+      let m: Record<string, any>
+      try {
+        m = JSON.parse(data.toString())
+      } catch {
+        return
+      }
+      switch (m.t) {
+        case 'challenge': {
+          roomDid = m.room
+          const join: JoinRequest = signObject(opts.identity, ROOM_JOIN_CONTEXT, { t: 'join' as const, session: opts.session, did: me, peer: opts.peer, nonce: m.nonce, beacon: opts.beacon, mandate: opts.mandate })
+          return ws.send(JSON.stringify(join))
+        }
+        case 'refused':
+          // Before any state, the room would not let us in at all.
+          if (!state) return fail(`the room refused: ${m.reason}`)
+          refused = String(m.reason)
+          return quiet()
+        case 'state': {
+          state = m as RoomState
+          if (state.quote) quote = state.quote
+          if (state.sign && !signedBody) return sign(state.sign)
+          if (opts.move && !sent && state.status !== 'ended' && state.status !== 'quoted') {
+            sent = true
+            return ws.send(JSON.stringify({ t: 'move', move: opts.move }))
+          }
+          return quiet()
+        }
+        case 'quote': {
+          const q = m.quote as Quote
+          const ours = signedBody ? canonicalize(quoteBody(q)) === canonicalize(signedBody) : q.session === opts.session && q.parties.some((p) => p.did === me)
+          if (checkQuote(q) !== null || !ours) return fail('the room issued a quote that is not valid')
+          quote = q
+          return quiet()
+        }
       }
     })
   })

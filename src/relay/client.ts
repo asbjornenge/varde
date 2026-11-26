@@ -1,5 +1,5 @@
 import WebSocket from 'ws'
-import { type Beacon, checkBeacon } from '../core/beacon.js'
+import { type Beacon, type Retraction, checkBeacon } from '../core/beacon.js'
 import { nonce } from '../core/bytes.js'
 import type { Filter } from '../core/filter.js'
 import { type Identity, sign } from '../core/identity.js'
@@ -104,6 +104,11 @@ export class RelayClient {
   /** Publishes a beacon and returns its id. `pass` is the relay's trusted-publisher secret, for bridges. */
   async publish(beacon: Beacon, pass?: string): Promise<string> {
     return String((await this.request({ t: 'publish', beacon, ...(pass ? { pass } : {}) })).id)
+  }
+
+  /** Puts out a beacon before its time. The retraction is signed by the key that lit it. */
+  async retract(retraction: Retraction): Promise<void> {
+    await this.request({ t: 'retract', retraction })
   }
 
   subscribe(filter: Filter, onBeacon: (b: Beacon) => void): Subscription {

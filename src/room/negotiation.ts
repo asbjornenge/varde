@@ -70,6 +70,19 @@ export type MoveResult =
   /** `over` is set when the refusal used up the last turn. */
   | { ok: false; reason: string; remaining: number; over: boolean }
 
+export interface NegotiationSnapshot {
+  parties: { did: string; mandate: Mandate }[]
+  roomMaxTurns: number
+  status: Negotiation['status']
+  endReason?: string
+  agreedPrice?: number
+  agreedTerms?: Terms
+  turns: number
+  toMove: string | null
+  standing?: { from: string; price: number; terms?: Terms }
+  history: MoveEvent[]
+}
+
 export const MAX_NOTE_CHARS = 280
 export const MAX_PRICE = 1e12
 
@@ -120,14 +133,21 @@ export function withinMandate(m: Mandate, price: number, terms: Terms = {}): boo
 export class Negotiation {
   readonly maxTurns: number
   readonly currency: string
-  /** The party that moves first: the receiving side names a price. */
+  /**
+   * The party expected to open: the receiving side names a price. It is a
+   * convention for two parties who are both present, so that they do not open
+   * at once. Either side may in fact make the first offer, which matters when
+   * the parties come and go and one of them is not there yet.
+   */
   readonly first: string
   status: 'open' | 'agreed' | 'ended' = 'open'
   endReason?: string
   agreedPrice?: number
   agreedTerms?: Terms
   turns = 0
-  private toMove: string
+  private toMove: string | null = null
+  /** Every move that was accepted, in order. */
+  readonly history: MoveEvent[] = []
   private standing?: { from: string; price: number; terms?: Terms }
   private mandates: Map<string, Mandate>
 
@@ -142,11 +162,43 @@ export class Negotiation {
     this.currency = a.mandate.currency.toUpperCase()
     this.maxTurns = Math.min(roomMaxTurns, a.mandate.maxTurns ?? Infinity, b.mandate.maxTurns ?? Infinity)
     this.first = a.mandate.side === 'receive' ? a.did : b.did
-    this.toMove = this.first
   }
 
   get remaining() {
     return this.maxTurns - this.turns
+  }
+
+  /** Whether `did` may move now. Before the first offer, either party may. */
+  mayMove(did: string): boolean {
+    return this.status === 'open' && this.mandates.has(did) && (this.toMove === null || this.toMove === did)
+  }
+
+  /** The offer on the table, if any. */
+  get offer(): { from: string; price: number; terms?: Terms } | undefined {
+    return this.standing
+  }
+
+  /** Everything needed to carry on later, for a room that keeps sessions across restarts. */
+  snapshot(): NegotiationSnapshot {
+    return {
+      parties: [...this.mandates].map(([did, mandate]) => ({ did, mandate })),
+      roomMaxTurns: this.maxTurns,
+      status: this.status,
+      endReason: this.endReason,
+      agreedPrice: this.agreedPrice,
+      agreedTerms: this.agreedTerms,
+      turns: this.turns,
+      toMove: this.toMove,
+      standing: this.standing,
+      history: this.history,
+    }
+  }
+
+  static restore(s: NegotiationSnapshot): Negotiation {
+    const n = new Negotiation(s.parties[0], s.parties[1], s.roomMaxTurns)
+    Object.assign(n, { status: s.status, endReason: s.endReason, agreedPrice: s.agreedPrice, agreedTerms: s.agreedTerms, turns: s.turns, toMove: s.toMove, standing: s.standing })
+    n.history.push(...s.history)
+    return n
   }
 
   private other(did: string): string {
@@ -174,7 +226,7 @@ export class Negotiation {
       return { ok: false, reason, remaining: this.remaining, over: this.status !== 'open' }
     }
 
-    if (did !== this.toMove) return refuse('not your turn')
+    if (this.toMove !== null && did !== this.toMove) return refuse('not your turn')
     if (!move || typeof move !== 'object') return refuse('malformed move')
     if (move.note !== undefined && (typeof move.note !== 'string' || move.note.length > MAX_NOTE_CHARS))
       return refuse(`note must be text of at most ${MAX_NOTE_CHARS} characters`)
@@ -210,6 +262,7 @@ export class Negotiation {
     }
 
     const event: MoveEvent = { from: did, kind: move.kind, price, terms, note: move.note, turn: this.turns, remaining: this.remaining }
+    this.history.push(event)
     if (this.status === 'open' && this.remaining <= 0) this.end('turn-limit')
     return { ok: true, event }
   }

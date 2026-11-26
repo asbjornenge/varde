@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { type WebSocket, WebSocketServer } from 'ws'
-import { type Beacon, beaconId, checkBeacon, isExpired } from '../core/beacon.js'
+import { type Beacon, type Retraction, beaconId, checkBeacon, checkRetraction, isExpired } from '../core/beacon.js'
 import { nonce } from '../core/bytes.js'
 import { type Filter, isFilter, matchesFilter } from '../core/filter.js'
 import { powBits } from '../core/pow.js'
@@ -133,11 +133,14 @@ export async function startRelay(opts: RelayOptions = {}): Promise<Relay> {
   }
 
   const beacons = new Map<string, Beacon>()
+  /** Beacons their lighters have put out, by id, kept until the beacon would have expired so it cannot be put back. */
+  const retracted = new Map<string, Retraction>()
   const mail = new Map<string, StoredMail[]>()
   const conns = new Set<Conn>()
 
   if (opts.dataFile && existsSync(opts.dataFile)) {
-    const saved = JSON.parse(readFileSync(opts.dataFile, 'utf8')) as { beacons?: Beacon[]; mail?: StoredMail[] }
+    const saved = JSON.parse(readFileSync(opts.dataFile, 'utf8')) as { beacons?: Beacon[]; mail?: StoredMail[]; retracted?: Retraction[] }
+    for (const r of saved.retracted ?? []) if (checkRetraction(r) === null && Date.parse(r.expires) > now()) retracted.set(r.beacon, r)
     // Stored beacons are checked like any other: the file is not trusted either.
     for (const b of saved.beacons ?? []) if (checkBeacon(b, now()) === null) beacons.set(beaconId(b), b)
     for (const m of saved.mail ?? []) if (m.at + mailTtlMs > now()) mail.set(m.to, [...(mail.get(m.to) ?? []), m])
@@ -149,7 +152,7 @@ export async function startRelay(opts: RelayOptions = {}): Promise<Relay> {
     if (!opts.dataFile) return
     mkdirSync(dirname(opts.dataFile), { recursive: true })
     const tmp = `${opts.dataFile}.tmp`
-    writeFileSync(tmp, JSON.stringify({ beacons: [...beacons.values()], mail: [...mail.values()].flat() }), { mode: 0o600 })
+    writeFileSync(tmp, JSON.stringify({ beacons: [...beacons.values()], mail: [...mail.values()].flat(), retracted: [...retracted.values()] }), { mode: 0o600 })
     renameSync(tmp, opts.dataFile)
   }
   const changed = () => {
@@ -169,6 +172,7 @@ export async function startRelay(opts: RelayOptions = {}): Promise<Relay> {
   function sweep() {
     const t = now()
     for (const [id, b] of beacons) if (isExpired(b, t)) beacons.delete(id)
+    for (const [id, r] of retracted) if (Date.parse(r.expires) <= t) retracted.delete(id)
     for (const [to, list] of mail) {
       const kept = list.filter((m) => m.at + mailTtlMs > t)
       if (kept.length) mail.set(to, kept)
@@ -185,6 +189,8 @@ export async function startRelay(opts: RelayOptions = {}): Promise<Relay> {
     if (problem) return send(c, { t: 'error', ref, reason: problem })
     if (Date.parse(beacon.expires) - now() > maxTtlMs) return send(c, { t: 'error', ref, reason: 'expires too far ahead' })
     const id = beaconId(beacon)
+    // Put out by its own lighter. Nobody can light it again, the lighter included.
+    if (retracted.get(id)?.who === beacon.who) return send(c, { t: 'error', ref, reason: 'retracted' })
     if (!beacons.has(id)) {
       if (!trusted && minPowBits && powBits(beacon) < minPowBits) return send(c, { t: 'error', ref, reason: `needs ${minPowBits} bits of proof of work` })
       if (!trusted && !addressState(c.address).publish.take(Date.now())) return send(c, { t: 'error', ref, reason: 'rate limited' })
@@ -255,6 +261,23 @@ export async function startRelay(opts: RelayOptions = {}): Promise<Relay> {
       switch (m.t) {
         case 'publish':
           return publish(c, ref, m.beacon as Beacon, m.pass)
+        case 'retract': {
+          const r = m.retraction as Retraction
+          const problem = checkRetraction(r)
+          if (problem) return send(c, { t: 'error', ref, reason: problem })
+          // Remembered whether or not the beacon is here: it may arrive later by another route.
+          const stored = beacons.get(r.beacon)
+          if (stored && stored.who !== r.who) return send(c, { t: 'error', ref, reason: 'that beacon was lit by another key' })
+          // A key can only fill the relay's memory with as many retractions as it could have had beacons.
+          let held = 0
+          for (const x of retracted.values()) if (x.who === r.who) held++
+          if (!retracted.has(r.beacon) && held >= maxPerWho * 2) return send(c, { t: 'error', ref, reason: 'too many retractions for this key' })
+          if (Date.parse(r.expires) > now()) retracted.set(r.beacon, { ...r, expires: new Date(Math.min(Date.parse(r.expires), now() + maxTtlMs)).toISOString() })
+          beacons.delete(r.beacon)
+          changed()
+          for (const other of conns) for (const sub of other.subs.keys()) send(other, { t: 'retracted', sub, id: r.beacon })
+          return send(c, { t: 'ok', ref, id: r.beacon })
+        }
         case 'sub':
           return subscribe(c, ref, m.sub, m.filter)
         case 'unsub':

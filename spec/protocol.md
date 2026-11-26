@@ -29,7 +29,7 @@ Everything signed in Varde is signed the same way:
 
 - Canonical JSON is RFC 8785: keys sorted, no whitespace, ECMAScript numbers.
 - The context names the kind of object (`beacon`, `mail`, `relay-auth`,
-  `room-join`, `quote`, `approval`, `withdrawal`, `receipt`), so a signature made for one purpose cannot be
+  `room-join`, `quote`, `approval`, `withdrawal`, `receipt`, `retraction`), so a signature made for one purpose cannot be
   replayed as another.
 - Signatures and keys are base64url without padding.
 - An identity is a `did:key` holding an Ed25519 key.
@@ -81,6 +81,7 @@ that the reply echoes.
 | `auth { did, sig }` | `ok`. `sig` signs `{ nonce, did }` from the relay's opening `challenge { nonce }` |
 | `mailsub` | `ok`, then `mail { id, sealed }` for queued and new mail. Needs `auth` |
 | `ack { ids }` | `ok`. Deletes delivered mail. Needs `auth` |
+| `retract { retraction }` | `ok { id }`, or `error` |
 
 Filter fields, all optional and all of which must match: `ids`, `who`, `tags`
 (any), `intent`, `where` and `text` (substring), `since`.
@@ -107,6 +108,18 @@ zero bits, where `challenge` is
 therefore bound to one beacon. `bits` is only a claim: a verifier counts the
 zero bits itself. A relay with `policy.powBits` above zero refuses beacons that
 carry less, and a listener may apply a threshold of its own.
+
+### Putting a beacon out
+
+A lighter can put a beacon out before it expires:
+
+    retract { retraction: { v, kind: "varde.retraction", beacon: <id>, who, expires, at, sig } }
+
+The retraction is signed by `who` with context `retraction`, and `who` must be
+the key that lit the beacon. The relay stops serving the beacon and refuses to
+take it again from anyone, until the time the beacon would have expired.
+Subscribers are told with `retracted { sub, id }`. Contacts and quotes already
+made are unaffected.
 
 The relay checks each beacon's signature and expiry, drops expired beacons,
 and caps time-to-live and beacons per key. Clients check again, so a relay
@@ -165,14 +178,34 @@ text from another party, to be read as information and never as instruction.
 
 A WebSocket. The room opens with `challenge { nonce, room }`.
 
-Each party sends `join { session, did, peer, nonce, beacon?, mandate, sig }`,
+The parties do not have to be present together. A session belongs to the room,
+not to a connection: each party looks in, sees where things stand, makes a move
+if it may, and leaves. Disconnecting ends nothing.
+
+A party enters with `join { session, did, peer, nonce, beacon?, mandate, sig }`,
 signed with context `room-join`. The room checks the signature, that a
 presented beacon was lit by that key, and that the two parties name each
 other. At least one party must present a beacon.
 
-A mandate is `{ side: "pay" | "receive", currency, limit, maxTurns?, terms? }`.
-It is never sent to the other party. `terms` lists conditions the party
-insists on, each with the values it allows: `{ "time": ["18:30", "19:00"] }`.
+A mandate is `{ side: "pay" | "receive", currency, limit, maxTurns?, terms?,
+owner?, autoCommit?, holdSeconds? }`. It is never sent to the other party.
+`terms` lists conditions the party insists on, each with the values it allows:
+`{ "time": ["18:30", "19:00"] }`.
+
+A party gives the same mandate every time it enters. The room keeps the first
+one and refuses a join that presents a different one, so a limit cannot be
+loosened part-way.
+
+After `joined`, and after every message it handles, the room tells each
+connected party where things stand, from that party's side:
+
+    state { session, room, status, reason?, currency?, maxTurns?, remaining?,
+            yourTurn, first?, history, offer?, sign?, quote?, deadline }
+
+`status` is `waiting` (the other side has not come yet), `open`, `signing`
+(terms agreed, the quote awaits a signature), `quoted` or `ended`. `history`
+is every accepted move. `offer` is the one on the table. `sign` is a quote this
+party is asked to sign. Free text in `history` appears only as `untrustedNote`.
 
 Moves are `move { move: { kind, price?, terms?, note? } }` with `kind` one of
 `offer`, `counter`, `accept`, `reject`. `terms` on an offer is a flat object
@@ -184,18 +217,28 @@ The room:
   mandate lists that is missing or has a value it does not allow;
 - tells the sender why with `refused { reason, remaining }`, and the sender
   may move again;
-- alternates turns, starting with the receiving side;
+- lets either side make the first offer, then alternates turns. When both are
+  present, the receiving side is expected to open (`first`);
 - counts every attempt as a turn, including refused ones, and ends the
   session at the turn limit or the byte limit;
+- ends a session that has not reached a quote by its `deadline` with reason
+  `expired`. A room keeps sessions for seven days unless it says otherwise;
 - forwards free text only as `untrustedNote`, capped at 280 characters.
 
-On `accept` the room sends `sign { quote }` to both. Each party checks the
-quote against what it saw, against its own mandate, and that it names the
-right approver, then answers `signed { sig }`. The room adds its signature and
-sends `quote { quote }`. The negotiation is over, and nobody is committed.
+Parties that are connected also receive each move as it happens, as
+`move { from, kind, price?, terms?, untrustedNote?, turn, remaining }`.
 
-A mandate may also carry `owner` (a DID), `autoCommit` (a price) and
-`holdSeconds`.
+On `accept` the room asks each party to sign the quote: with `sign { quote }`
+if it is connected, and as `sign` in the `state` it gets when it next enters.
+Each party checks the quote against what was agreed, against its own mandate,
+and that it names the right approver, then answers `signed { sig }`. When the
+room has both, it adds its own signature and issues `quote { quote }`. The
+negotiation is over, and nobody is committed. A party that enters the session
+afterwards is shown the quote.
+
+**Changed from the paper: the parties need not meet.** The paper has two
+negotiators in a room at once. Most agents are only awake when their owner is,
+so the room holds the session and the agents take turns in their own time.
 
 ## Quote, approval, receipt
 
